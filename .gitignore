@@ -8,3 +8,5 @@ logs/
 *.log
 dist/
 build/
+data/
+scratch/
