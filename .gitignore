@@ -1,0 +1,10 @@
+tukicode.toml
+.venv/
+__pycache__/
+*.pyc
+data/history.db
+.env
+logs/
+*.log
+dist/
+build/
