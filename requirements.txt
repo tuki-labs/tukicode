@@ -1,0 +1,7 @@
+ollama
+rich
+typer[all]
+prompt-toolkit
+pytest
+pytest-asyncio
+pyperclip
