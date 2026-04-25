@@ -156,4 +156,4 @@ def run_demo():
         anim.stop()
 
 if __name__ == "__main__":
-    run_demo()
+    run_demo()

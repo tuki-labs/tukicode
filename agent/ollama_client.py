@@ -56,8 +56,14 @@ class OllamaClient:
 
     def list_models(self) -> List[str]:
         try:
-            models = ollama.list()
-            return [m['name'] for m in models.get('models', [])]
+            resp = ollama.list()
+            # Handle object-based response (newer versions)
+            if hasattr(resp, 'models'):
+                return [m.model for m in resp.models]
+            # Handle dict-based response (older versions)
+            if isinstance(resp, dict):
+                return [m['name'] for m in resp.get('models', [])]
+            return []
         except Exception:
             return []
 

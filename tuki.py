@@ -4,18 +4,31 @@ import typer
 import asyncio
 from pathlib import Path
 
-# Añadir el directorio actual al path para importaciones absolutas
-sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)))
+# Soporte para PyInstaller (empaquetado)
+if getattr(sys, 'frozen', False):
+    # Si estamos en un ejecutable, el directorio base es sys._MEIPASS
+    base_path = sys._MEIPASS
+else:
+    # Si estamos en desarrollo, es el directorio del archivo
+    base_path = os.path.abspath(os.path.dirname(__file__))
+
+sys.path.insert(0, base_path)
 
 from config import load_config, get_app_dir, save_config, Config
 from integrations import load_integrations
 from agent.ollama_client import OllamaClient
+from agent.openrouter_client import OpenRouterClient
 from tools.registry import registry as tool_registry
 from agent.context import ConversationContext
 from agent.loop import AgentLoop
 from ui.display import TukiDisplay
 from ui.input import TukiInput, COMMANDS
 from ui.layout import TukiApp
+from enum import Enum
+
+class ConfigComponent(str, Enum):
+    OLLAMA = "ollama"
+    OPENROUTER = "openrouter"
 
 app = typer.Typer(help="TukiCode - CLI Programming Agent")
 
@@ -38,17 +51,28 @@ def chat(session_id: int = typer.Argument(None, help="ID of a previous session t
     if loaded_integrations:
         display.console.print(f"[dim]Loaded integrations: {', '.join(loaded_integrations)}[/dim]")
 
-    client = OllamaClient(
-        model_name=config.model.name,
-        temperature=config.model.temperature,
-        max_tokens=config.model.max_tokens,
-        stream=config.agent.stream
-    )
-
-    with display.show_spinner("Verifying Ollama"):
+    if config.openrouter.enabled:
+        client = OpenRouterClient(
+            model_name=config.model.name,
+            temperature=config.model.temperature,
+            max_tokens=config.model.max_tokens,
+            stream=config.agent.stream,
+            api_key=config.openrouter.api_key
+        )
         if not client.is_available():
-            display.show_error("Ollama is not available. Make sure it is running (ollama serve).")
-            raise  typer.Exit(1)
+            display.show_error("OpenRouter API Key is missing. Check your tukicode.toml.")
+            raise typer.Exit(1)
+    else:
+        client = OllamaClient(
+            model_name=config.model.name,
+            temperature=config.model.temperature,
+            max_tokens=config.model.max_tokens,
+            stream=config.agent.stream
+        )
+        with display.show_spinner("Verifying Ollama"):
+            if not client.is_available():
+                display.show_error("Ollama is not available. Make sure it is running (ollama serve).")
+                raise typer.Exit(1)
 
     context = ConversationContext(config.model.context_window)
     base_dir = get_app_dir()
@@ -74,13 +98,36 @@ def chat(session_id: int = typer.Argument(None, help="ID of a previous session t
         print(f"\nConversation saved. Total session tokens: {context.token_count}")
 
 
-@app.command("config", help="Shows the current system configuration.")
-def show_config():
+@app.command("config", help="Shows or modifies the system configuration. Use --setup to enter interactive mode.")
+def show_config(setup: ConfigComponent = typer.Option(None, "--setup", help="Setup a specific component interactively.")):
+    from config import save_config
     config = load_config()
     display = TukiDisplay()
-    # Simple dict dump
+
+    if setup == ConfigComponent.OLLAMA:
+        display.console.print("\n[bold cyan]─── Ollama Configuration (Local) ───[/bold cyan]")
+        config.openrouter.enabled = False
+        config.model.name = typer.prompt("Ollama model name", default=config.model.name)
+        config.model.temperature = float(typer.prompt("Temperature", default=str(config.model.temperature)))
+        config.model.max_tokens = int(typer.prompt("Max tokens", default=str(config.model.max_tokens)))
+        config.model.context_window = int(typer.prompt("Context window", default=str(config.model.context_window)))
+        save_config(config)
+        display.console.print("\n[bold green]✅ Ollama configuration saved and set as active![/bold green]")
+        return
+
+    if setup == ConfigComponent.OPENROUTER:
+        display.console.print("\n[bold cyan]─── OpenRouter Configuration (Cloud) ───[/bold cyan]")
+        config.openrouter.enabled = True
+        config.model.name = typer.prompt("OpenRouter model name", default=config.model.name)
+        config.openrouter.api_key = typer.prompt("OpenRouter API Key", default=config.openrouter.api_key, hide_input=True)
+        save_config(config)
+        display.console.print("\n[bold green]✅ OpenRouter configuration saved and set as active![/bold green]")
+        return
+
+    # Default behavior: show current config
     import dataclasses
     import json
+    display.console.print("\n[bold cyan]Current Configuration:[/bold cyan]")
     data = dataclasses.asdict(config)
     display.console.print(json.dumps(data, indent=2, ensure_ascii=False))
 
@@ -129,19 +176,36 @@ def show_history(limit: int = typer.Option(10, "--limit", "-l", help="Amount to 
         display.show_history_table(rows)
 
 
-@app.command("models", help="Lists the downloaded models in your local Ollama server.")
+@app.command("models", help="Lists available local and cloud models.")
 def list_models():
     config = load_config()
-    client = OllamaClient(config.model.name, 0, 0, False)
+    display = TukiDisplay()
     
-    if not client.is_available():
-        print("Error: Ollama is not available.")
-        return
-        
-    models = client.list_models()
-    for m in models:
-        prefix = "✅ " if m == config.model.name else "   "
-        print(f"{prefix}{m}")
+    # 1. Local Ollama Models
+    ollama_client = OllamaClient(config.model.name, 0, 0, False)
+    display.console.print("\n[bold cyan]─── Local Ollama Models ───[/bold cyan]")
+    if ollama_client.is_available():
+        models = ollama_client.list_models()
+        if not models:
+            display.console.print("[dim]  No local models found.[/dim]")
+        for m in models:
+            # Marcamos como activo solo si OpenRouter está desactivado y el nombre coincide
+            is_active = (m == config.model.name and not config.openrouter.enabled)
+            prefix = "✅ " if is_active else "   "
+            display.console.print(f"{prefix}{m}")
+    else:
+        display.console.print("[yellow]  Ollama is not available (not running).[/yellow]")
+
+    # 2. Cloud Model (OpenRouter)
+    if config.openrouter.enabled:
+        display.console.print("\n[bold cyan]─── Cloud Model (OpenRouter) ───[/bold cyan]")
+        display.console.print(f"✅ {config.model.name} [dim](Active)[/dim]")
+    elif config.openrouter.api_key:
+        display.console.print("\n[bold cyan]─── Cloud Model (OpenRouter) ───[/bold cyan]")
+        display.console.print(f"   {config.model.name} [dim](Inactive - using Ollama)[/dim]")
+
+def main():
+    app()
 
 if __name__ == "__main__":
-    app()
+    main()

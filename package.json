@@ -1,0 +1,23 @@
+{
+  "name": "tukicode",
+  "version": "1.0.0",
+  "description": "TukiCode - CLI Programming Agent",
+  "main": "index.js",
+  "bin": {
+    "tuki": "./bin/tuki.js"
+  },
+  "scripts": {
+    "postinstall": "pip install -e ."
+  },
+  "keywords": [
+    "ai",
+    "agent",
+    "cli",
+    "coding",
+    "assistant",
+    "ollama",
+    "openrouter"
+  ],
+  "author": "TukiCode Team",
+  "license": "MIT"
+}

@@ -10,10 +10,13 @@ from contextlib import contextmanager
 from tools.base import ToolResult
 
 class TukiDisplay:
-    def __init__(self, on_output=None):
+    def __init__(self, on_output=None, on_confirm=None):
         self.console = Console()
         self.on_output = on_output
+        self.on_confirm = on_confirm
         self.should_stop = False
+        import shutil
+        self._shutil = shutil
 
     def _print(self, text):
         if self.on_output:
@@ -33,11 +36,18 @@ class TukiDisplay:
         if self.on_output:
             self.on_output("", is_start=True)
         else:
-            self._print("\n[bold cyan]TukiCode:[/bold cyan]")
+            self.console.print("\n[bold cyan]TukiCode:[/bold cyan] [dim]Thinking...[/dim]", end="\r")
             
         full_response = ""
-        # Usar print normal para tokens sin nueva línea
+        first_chunk = True
         for chunk in chunk_generator:
+            if first_chunk:
+                if not self.on_output:
+                    # Clear the "Thinking..."
+                    self.console.print("\n[bold cyan]TukiCode:[/bold cyan]               ", end="\r")
+                    self.console.print("\n[bold cyan]TukiCode:[/bold cyan] ", end="")
+                first_chunk = False
+            
             if self.should_stop:
                 self._print("\n[bold yellow]Generation stopped by user.[/bold yellow]\n")
                 self.should_stop = False # Reset
@@ -72,27 +82,65 @@ class TukiDisplay:
         )
         
         if self.on_output:
+            # Adjust width for TUI
+            terminal_width = self._shutil.get_terminal_size().columns
+            self.console.width = max(terminal_width - 10, 40)
+            
             # We need to render rich panel to string
             with self.console.capture() as capture:
                 self.console.print(panel)
             self.on_output(capture.get())
         else:
+            self.console.width = None # Reset to default
             self.console.print(panel)
 
     def show_diff(self, diff_str: str):
         syntax = Syntax(diff_str, "diff", theme="monokai", line_numbers=True)
-        self.console.print(Panel(syntax, title="Differences", border_style="cyan"))
+        if self.on_output:
+            terminal_width = self._shutil.get_terminal_size().columns
+            self.console.width = max(terminal_width - 10, 40)
+            with self.console.capture() as capture:
+                self.console.print(Panel(syntax, title="Differences", border_style="cyan"))
+            self.on_output(capture.get())
+        else:
+            self.console.width = None
+            self.console.print(Panel(syntax, title="Differences", border_style="cyan"))
 
     def confirm(self, message: str) -> bool:
-        self.console.print(f"[bold yellow]⚠️ {message} [Y/n][/bold yellow]", end=" ")
-        resp = input().strip().lower()
-        return resp in ["", "y", "yes"]
+        self.console.print(f"\n[bold yellow]⚠️ {message} [Y/n][/bold yellow]", end=" ")
+        try:
+            resp = input().strip().lower()
+            return resp in ["", "y", "yes"]
+        except EOFError:
+            return False
+
+    async def confirm_async(self, message: str) -> bool:
+        if self.on_confirm:
+            return await self.on_confirm(message)
+        # Fallback to sync if no async callback
+        return self.confirm(message)
 
     def show_error(self, message: str):
-        self.console.print(Panel(message, title="Error", border_style="red"))
+        if self.on_output:
+            terminal_width = self._shutil.get_terminal_size().columns
+            self.console.width = max(terminal_width - 10, 40)
+            with self.console.capture() as capture:
+                self.console.print(Panel(message, title="Error", border_style="red"))
+            self.on_output(capture.get())
+        else:
+            self.console.width = None
+            self.console.print(Panel(message, title="Error", border_style="red"))
 
     def show_tree(self, tree_str: str):
-        self.console.print(Panel(tree_str, title="Project Tree", border_style="blue"))
+        if self.on_output:
+            terminal_width = self._shutil.get_terminal_size().columns
+            self.console.width = max(terminal_width - 10, 40)
+            with self.console.capture() as capture:
+                self.console.print(Panel(tree_str, title="Project Tree", border_style="blue"))
+            self.on_output(capture.get())
+        else:
+            self.console.width = None
+            self.console.print(Panel(tree_str, title="Project Tree", border_style="blue"))
 
     @contextmanager
     def show_spinner(self, message: str):

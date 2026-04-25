@@ -5,11 +5,13 @@ from dataclasses import dataclass, field
 from typing import List, Optional
 import sys
 
+# Config for CLI
 def get_app_dir() -> Path:
     if getattr(sys, 'frozen', False):
         return Path(sys.executable).parent.absolute()
     return Path(__file__).parent.absolute()
 
+# Config for Ollama
 @dataclass
 class ModelConfig:
     name: str = "deepseek-coder:1.3b"
@@ -17,6 +19,7 @@ class ModelConfig:
     max_tokens: int = 4096
     context_window: int = 32768
 
+# Config for Agent autonomy
 @dataclass
 class AgentConfig:
     risk_level: str = "medium"
@@ -24,11 +27,13 @@ class AgentConfig:
     think_aloud: bool = True
     stream: bool = True
 
+# Config for Search
 @dataclass
 class SearchConfig:
     use_ripgrep: bool = True
     max_depth: int = 8
     ignored_paths: List[str] = field(default_factory=lambda: ["node_modules", ".git", "__pycache__", ".venv", "venv", "dist", "build", ".next"])
+
 
 @dataclass
 class HistoryConfig:
@@ -39,9 +44,17 @@ class HistoryConfig:
 class OpenClawConfig:
     enabled: bool = False
 
+# Config for OpenRouter if want to use it OpenRouter instead of Ollama
+@dataclass
+class OpenRouterConfig:
+    enabled: bool = False
+    api_key: str = ""
+
+# Config for Integrations
 @dataclass
 class IntegrationsConfig:
     openclaw: OpenClawConfig = field(default_factory=OpenClawConfig)
+
 
 @dataclass
 class Config:
@@ -50,6 +63,7 @@ class Config:
     search: SearchConfig = field(default_factory=SearchConfig)
     history: HistoryConfig = field(default_factory=HistoryConfig)
     integrations: IntegrationsConfig = field(default_factory=IntegrationsConfig)
+    openrouter: OpenRouterConfig = field(default_factory=OpenRouterConfig)
 
 _config_instance: Optional[Config] = None
 
@@ -107,7 +121,8 @@ def load_config() -> Config:
         agent=agent_cfg,
         search=search_cfg,
         history=history_cfg,
-        integrations=integ_cfg
+        integrations=integ_cfg,
+        openrouter=_dict_to_dataclass(OpenRouterConfig, data.get("openrouter", {}))
     )
     return _config_instance
 
@@ -141,6 +156,10 @@ max_conversations = {config.history.max_conversations}
 
 [integrations.openclaw]
 enabled = {"true" if config.integrations.openclaw.enabled else "false"}
+
+[openrouter]
+enabled = {"true" if config.openrouter.enabled else "false"}
+api_key = "{config.openrouter.api_key}"
 '''
     with open(config_path, "w", encoding="utf-8") as f:
         f.write(toml_str)

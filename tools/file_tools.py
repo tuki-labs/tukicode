@@ -25,6 +25,14 @@ def write_file(path: str, content: str, create_dirs: bool = True) -> ToolResult:
         p.parent.mkdir(parents=True, exist_ok=True)
     
     try:
+        # Safeguard: If the model sent literal \n strings instead of real newlines
+        if "\\n" in content and "\n" not in content:
+            try:
+                # Unescape \n, \t, etc.
+                content = content.encode('utf-8').decode('unicode_escape')
+            except:
+                pass
+
         p.write_text(content, encoding="utf-8")
         return ToolResult(success=True, output=f"File '{path}' successfully written.")
     except Exception as e:
@@ -44,6 +52,12 @@ def patch_file(path: str, old_str: str, new_str: str) -> ToolResult:
         if count > 1:
             return ToolResult(success=False, output="", error="The string 'old_str' appears multiple times. Ambiguity detected.")
         
+        if "\\n" in new_str and "\n" not in new_str:
+            try:
+                new_str = new_str.encode('utf-8').decode('unicode_escape')
+            except:
+                pass
+
         new_content = content.replace(old_str, new_str)
         p.write_text(new_content, encoding="utf-8")
         

@@ -23,27 +23,32 @@ def _clean_json(text: str) -> str:
     return text
 
 def parse_response(text: str) -> Union[ToolCall, FinalResponse]:
-    # Buscar bloque ```json ... ```
+    # 1. Buscar bloques de código json
     json_blocks = re.findall(r"```(?:json)?\s*([\s\S]*?)```", text)
     candidate_jsons = json_blocks if json_blocks else [text]
-    
+
     for candidate in candidate_jsons:
         candidate = candidate.strip()
-        # Intentar extraer algo que parezca un objeto JSON si hay texto adicional
-        match = re.search(r"\{[\s\S]*\}", candidate)
-        if match:
-            candidate = match.group(0)
+        
+        # Buscar el inicio de un objeto JSON que contenga "tool"
+        # Buscamos la posición de {"tool" o { "tool"
+        start_matches = list(re.finditer(r"\{\s*\"tool\"", candidate))
+        
+        for match in start_matches:
+            start_idx = match.start()
+            sub_text = candidate[start_idx:]
             
-        if candidate.startswith("{") and candidate.endswith("}"):
             try:
-                cleaned = _clean_json(candidate)
-                parsed = json.loads(cleaned)
+                # raw_decode parsea el primer objeto JSON válido y devuelve el objeto y dónde terminó
+                decoder = json.JSONDecoder()
+                parsed, end_idx = decoder.raw_decode(sub_text)
+                
                 if isinstance(parsed, dict) and "tool" in parsed and isinstance(parsed["tool"], str):
                     args = parsed.get("args", {})
                     if not isinstance(args, dict):
                         args = {}
                     return ToolCall(tool_name=parsed["tool"], args=args, raw=text)
-            except json.JSONDecodeError:
+            except (json.JSONDecodeError, ValueError):
                 continue
                 
     return FinalResponse(text=text)

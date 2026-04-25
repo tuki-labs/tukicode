@@ -1,5 +1,6 @@
 from prompt_toolkit.application import Application
 from prompt_toolkit.layout.containers import HSplit, VSplit, Window, WindowAlign
+from prompt_toolkit.layout.margins import ScrollbarMargin
 from prompt_toolkit.layout.controls import FormattedTextControl
 from prompt_toolkit.layout.layout import Layout
 from prompt_toolkit.layout.dimension import Dimension
@@ -16,8 +17,6 @@ from agent_icon import TukiAnimation
 from ui.display import TukiDisplay
 from agent.loop import AgentLoop
 import webbrowser
-
-
 class AnsiLexer(Lexer):
     def lex_document(self, document):
         def get_line(lineno):
@@ -47,12 +46,14 @@ class TukiApp:
         self.cmd_history = []
         self.cmd_index = -1
         self.current_typing = ""
+        self._waiting_for_confirm = None
         
         # Display with callback
-        self.display = TukiDisplay(on_output=self.append_text)
+        self.display = TukiDisplay(on_output=self.append_text, on_confirm=self.confirm_async)
         self.agent_loop = AgentLoop(config, client, registry, context, self.display)
         
         # UI Elements
+        self.output_control = FormattedTextControl(text=ANSI(""))
         self.output_area = TextArea(
             lexer=AnsiLexer(),
             read_only=True,
@@ -78,9 +79,9 @@ class TukiApp:
         self.layout = Layout(
             HSplit([
                 VSplit([
-                    Window(content=self.mascot_control, height=9, width=40),
-                    Window(content=self.banner_control, height=9, align=WindowAlign.CENTER),
-                ], height=9, style="class:header"),
+                    Window(content=self.mascot_control, height=11, width=40),
+                    Window(content=self.banner_control, height=11, align=WindowAlign.CENTER),
+                ], height=11, style="class:header"),
                 
                 Frame(
                     self.output_area, 
@@ -187,12 +188,23 @@ class TukiApp:
                 if msg["role"] == "user":
                     self._append_to_history(f"\n[bold cyan]You:[/bold cyan] {msg['content']}\n")
                 elif msg["role"] == "assistant":
+                    content = msg['content']
+                    # Si el mensaje es puramente JSON (tool call), lo formateamos mejor
+                    if content.strip().startswith("{") and content.strip().endswith("}"):
+                        try:
+                            import json
+                            js = json.loads(content)
+                            if "tool" in js:
+                                content = f"Intentando usar herramienta: [bold cyan]{js['tool']}[/bold cyan]"
+                        except:
+                            pass
+                    
                     size = self.application.renderer.output.get_size()
                     self.ui_console.width = max(size.columns - 4, 10)
                     with self.ui_console.capture() as capture:
                         self.ui_console.print("\n[bold cyan]TukiCode:[/bold cyan]")
                         self.ui_console.print(Panel(
-                            Markdown(msg['content']), 
+                            Markdown(content), 
                             border_style="cyan", 
                             title="Assistant Response",
                             expand=True
@@ -209,10 +221,13 @@ class TukiApp:
     #This is the render of the banner. It renders the model, risk, and exit instructions.
     def _get_banner_text(self):
         text = (f"\n[bold blue]TukiCode v1.0.0[/bold blue]\n"
+                f"  [italic dim]The agent assistant powered for everywhere[/italic dim]\n\n"
                 f"  Model: [cyan]{self.config.model.name}[/cyan]\n"
                 f"  Risk: [yellow]{self.config.agent.risk_level}[/yellow]\n"
                 f"  [dim]Ctrl+S: Stop | Ctrl+C: Exit[/dim]\n"
-                f"  [dim] Type /exit to Exit or /clear to Clear[/dim]")
+                f"  [dim] /exit to Exit | /clear to Clear[/dim]\n"
+                f"  [dim] /help to see more commands [/dim]")
+
         
         with self.ui_console.capture() as capture:
             self.ui_console.print(text, end="")
@@ -234,23 +249,46 @@ class TukiApp:
     def _refresh_display(self, auto_scroll=True):
         content = self._history_ansi
         
-        if self._is_streaming and self._current_stream:
+        if self._is_streaming:
+            # Filter JSON from stream to avoid visual noise
+            stream_to_show = self._current_stream
+            if '{"tool":' in stream_to_show or stream_to_show.strip().startswith("{"):
+                stream_to_show = "" # Hide raw JSON during streaming
+                
             size = self.application.renderer.output.get_size()
-            self.ui_console.width = size.columns - 6
+            self.ui_console.width = max(size.columns - 6, 20)
             with self.ui_console.capture() as capture:
                 self.ui_console.print("\n[bold cyan]TukiCode:[/bold cyan]")
-                self.ui_console.print(Markdown(self._current_stream))
+                if stream_to_show:
+                    self.ui_console.print(Markdown(stream_to_show))
+                else:
+                    import time
+                    dots = "." * (int(time.time() * 3) % 4)
+                    self.ui_console.print(f" [dim]Thinking{dots}[/dim]")
             content += capture.get()
 
-        # Check if cursor is at the end before updating
-        was_at_bottom = self.output_area.buffer.cursor_position == len(self.output_area.text)
-        
-        self.output_area.text = content
-        
-        if auto_scroll or was_at_bottom:
-            self.output_area.buffer.cursor_position = len(content)
+        # Update text only if it changed to avoid flickering and slow scroll
+        if self.output_area.text != content:
+            # Check if we were at the bottom
+            was_at_bottom = self.output_area.buffer.cursor_position == len(self.output_area.text)
+            
+            self.output_area.text = content
+            
+            if auto_scroll or was_at_bottom:
+                self.output_area.buffer.cursor_position = len(content)
         
         self.application.invalidate()
+
+    def _on_pre_run(self):
+        # Start background refresh loop for animations
+        asyncio.create_task(self._refresh_loop())
+
+    async def _refresh_loop(self):
+        while True:
+            # Only refresh automatically if we are in the "Thinking" state
+            if self._is_streaming and not self._current_stream:
+                self._refresh_display(auto_scroll=True)
+            await asyncio.sleep(0.2)
 
     def append_text(self, text, is_markup=False, is_final=False, final_text=None, is_start=False):
         # 1. Handle Turn End
@@ -258,13 +296,24 @@ class TukiApp:
             self._is_streaming = False
             self._current_stream = ""
             
+            display_text = final_text
+            # Si es un tool call, mostramos algo más amigable en lugar del JSON crudo
+            if display_text.strip().startswith("{") and display_text.strip().endswith("}"):
+                try:
+                    import json
+                    js = json.loads(display_text)
+                    if "tool" in js:
+                        display_text = f"Action: [bold cyan]{js['tool']}[/bold cyan] with args: [dim]{js.get('args', {})}[/dim]"
+                except:
+                    pass
+
             # Render the final panel
             size = self.application.renderer.output.get_size()
             self.ui_console.width = size.columns - 4
             with self.ui_console.capture() as capture:
                 self.ui_console.print("\n[bold cyan]TukiCode:[/bold cyan]")
                 self.ui_console.print(Panel(
-                    Markdown(final_text), 
+                    Markdown(display_text), 
                     border_style="cyan", 
                     title="Assistant Response",
                     expand=True
@@ -278,13 +327,14 @@ class TukiApp:
         if is_start:
             self._is_streaming = True
             self._current_stream = ""
+            self._refresh_display(auto_scroll=True)
             return
 
         # 3. Handle Content
         if self._is_streaming:
             self._current_stream += text
             # Debounce rendering for smoothness
-            if len(self._current_stream) % 5 == 0:
+            if len(self._current_stream) % 2 == 0:
                 self._refresh_display(auto_scroll=True)
         else:
             # System messages or tool results
@@ -294,6 +344,14 @@ class TukiApp:
     def _handle_submit(self):
         text = self.input_field.text.strip()
         
+        if self._waiting_for_confirm:
+            if text.lower() in ["y", "yes", "allow", "a"]:
+                self._waiting_for_confirm.set_result(True)
+            else:
+                self._waiting_for_confirm.set_result(False)
+            self.input_field.text = ""
+            return
+
         if self._exiting:
             self.session_title = text if text else None
             self.application.exit()
@@ -310,8 +368,8 @@ class TukiApp:
         
         if text == "/exit":
             self._exiting = True
-            self.input_field.prompt = " [Session Name (Optional)] > "
-            self._append_to_history("\n[bold yellow]Enter a name for this session (or press Enter for default):[/bold yellow]\n")
+            self.input_prompt_control.text = " [Name?] > "
+            self._append_to_history("\n [bold yellow]Enter a name for this session (or press Enter for default):[/bold yellow]\n")
             self._refresh_display(auto_scroll=True)
             return
             
@@ -344,7 +402,7 @@ class TukiApp:
             self._refresh_display(auto_scroll=True)
             return
 
-        if text == "/current_session":
+        if text == "/current_session":  
             self._append_to_history(f"\n[dim]Session ID:[/dim] {self.session_id}\n")
             self._refresh_display(auto_scroll=True)
             return 
@@ -401,11 +459,27 @@ class TukiApp:
         self._append_to_history(f"\n[bold cyan]You:[/bold cyan] {text}\n")
         asyncio.create_task(self._run_agent(text))
 
+    # run agent loop and show progress for each step
     async def _run_agent(self, user_msg):
         try:
             await self.agent_loop.run_turn(user_msg)
         except Exception        as e:
-            self._append_to_history(f"\n[bold red]Error:[/bold red] {str(e)}\n")
+            self._append_to_history(f"\n[bold red] Error:[/bold red] {str(e)}\n")
+
+    async def confirm_async(self, message: str) -> bool:
+        self._append_to_history(f"\n[bold yellow]⚠️ {message} [Y/n][/bold yellow]\n")
+        self.input_field.text = ""
+        self._waiting_for_confirm = asyncio.get_event_loop().create_future()
+        try:
+            result = await self._waiting_for_confirm
+            if result:
+                self._append_to_history("[bold green] Allowed.[/bold green]\n")
+            else:
+                self._append_to_history("[bold red] Denied.[/bold red]\n")
+            return result
+        finally:
+            self._waiting_for_confirm = None
+            self._refresh_display()
 
     def run(self):
-        self.application.run()
+        self.application.run(pre_run=self._on_pre_run)

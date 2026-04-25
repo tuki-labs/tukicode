@@ -1,6 +1,6 @@
 import sqlite3
 from typing import List, Dict
-from .ollama_client import OllamaClient
+from typing import List, Dict, Any
 from .prompts import build_compression_prompt
 
 def estimate_tokens(text: str) -> int:
@@ -32,7 +32,7 @@ class ConversationContext:
     def usage_percent(self) -> float:
         return self.token_count / self.context_window if self.context_window > 0 else 0.0
 
-    def compress_if_needed(self, ollama_client: OllamaClient):
+    def compress_if_needed(self, llm_client: Any):
         if self.usage_percent <= 0.80:
             return
             
@@ -46,7 +46,7 @@ class ConversationContext:
         prompt = build_compression_prompt(to_compress)
         
         try:
-            summary = ollama_client.chat([{"role": "user", "content": prompt}])
+            summary = llm_client.chat([{"role": "user", "content": prompt}])
             compressed_msg = {"role": "system", "content": "[CONTEXT SUMMARY]:\n" + summary}
             self.messages = [sys_msg, compressed_msg] + keep
             

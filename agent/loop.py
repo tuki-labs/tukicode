@@ -3,11 +3,12 @@ import datetime
 import asyncio
 from pathlib import Path
 from .parser import parse_response, ToolCall, FinalResponse
+from tools.base import RiskLevel
 
 class AgentLoop:
-    def __init__(self, config, ollama_client, tool_registry, context, display):
+    def __init__(self, config, llm_client, tool_registry, context, display):
         self.config = config
-        self.ollama_client = ollama_client
+        self.llm_client = llm_client
         self.tool_registry = tool_registry
         self.context = context
         self.display = display
@@ -22,7 +23,7 @@ class AgentLoop:
         self.context.add_message("user", user_message)
         
         for _ in range(20): # max 20 iterations
-            self.context.compress_if_needed(self.ollama_client)
+            self.context.compress_if_needed(self.llm_client)
             
             messages = self.context.get_messages()
             
@@ -35,6 +36,13 @@ class AgentLoop:
             loop = asyncio.get_event_loop()
             full_response = await loop.run_in_executor(None, self._chat_and_stream, messages)
             
+            # Debug: Guardar la respuesta cruda para inspección
+            try:
+                debug_path = Path("last_response.json")
+                debug_path.write_text(full_response, encoding="utf-8")
+            except:
+                pass
+            
             parsed = parse_response(full_response)
             
             if isinstance(parsed, ToolCall):
@@ -42,14 +50,14 @@ class AgentLoop:
                 
                 tool_item = self.tool_registry._tools.get(parsed.tool_name)
                 if tool_item:
-                    from ..tools.base import BaseTool
+                    from tools.base import BaseTool
                     tool_risk = tool_item.risk_level if isinstance(tool_item, BaseTool) else getattr(tool_item, "__tool_risk__")
-                    if tool_risk.name == "HIGH":
-                        # This needs to be async-aware confirmation
+                    if tool_risk.value >= RiskLevel.MEDIUM.value:
+                        # Use async confirmation if available (for UI), else fallback to sync
                         if hasattr(self.display, "confirm_async"):
-                            confirmed = await self.display.confirm_async(f"The tool {parsed.tool_name} has HIGH risk. Allow execution?")
+                            confirmed = await self.display.confirm_async(f"The tool [bold cyan]{parsed.tool_name}[/bold cyan] wants to run ({tool_risk.name} risk). Allow?")
                         else:
-                            confirmed = self.display.confirm(f"The tool {parsed.tool_name} has HIGH risk. Allow execution?")
+                            confirmed = self.display.confirm(f"The tool {parsed.tool_name} has {tool_risk.name} risk. Allow execution?")
                         
                         if not confirmed:
                             self.context.add_message("tool_result", "Execution cancelled by the user.")
@@ -77,7 +85,7 @@ class AgentLoop:
         return "ReAct loop iteration limit reached."
 
     def _chat_and_stream(self, messages):
-        stream = self.ollama_client.chat_stream(messages)
+        stream = self.llm_client.chat_stream(messages)
         return self.display.stream_response(stream)
 
     def save_to_history(self, db_path: str, custom_title: str = None, session_id: int = None):
@@ -107,7 +115,7 @@ class AgentLoop:
                       (date_str, custom_title, self.context.token_count, content_json, session_id))
         else:
             c.execute("INSERT INTO history (date, title, model, tokens, content) VALUES (?, ?, ?, ?, ?)",
-                      (date_str, title, self.ollama_client.model_name, self.context.token_count, content_json))
+                      (date_str, title, self.llm_client.model_name, self.context.token_count, content_json))
         
         conn.commit()
         conn.close()
