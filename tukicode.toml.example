@@ -1,0 +1,23 @@
+[model]
+name = "deepseek-coder:1.3b"
+temperature = 0.2
+max_tokens = 4096
+context_window = 32768
+
+[agent]
+risk_level = "medium"  # low | medium | high
+language = "es"
+think_aloud = true
+stream = true
+
+[search]
+use_ripgrep = true
+max_depth = 8
+ignored_paths = ["node_modules", ".git", "__pycache__", ".venv", "venv", "dist", "build", ".next"]
+
+[history]
+save_conversations = true
+max_conversations = 100
+
+[integrations.openclaw]
+enabled = false

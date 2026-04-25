@@ -1,0 +1,56 @@
+import sqlite3
+from typing import List, Dict
+from .ollama_client import OllamaClient
+from .prompts import build_compression_prompt
+
+def estimate_tokens(text: str) -> int:
+    return len(text) // 4
+
+class ConversationContext:
+    def __init__(self, context_window: int):
+        self.messages: List[Dict[str, str]] = []
+        self.token_count: int = 0
+        self.context_window: int = context_window
+
+    def add_message(self, role: str, content: str):
+        self.messages.append({"role": role, "content": content})
+        self.token_count += estimate_tokens(content)
+
+    def get_messages(self) -> List[Dict[str, str]]:
+        return self.messages
+
+    def clear(self):
+        if self.messages and self.messages[0]["role"] == "system":
+            sys_msg = self.messages[0]
+            self.messages = [sys_msg]
+            self.token_count = estimate_tokens(sys_msg["content"])
+        else:
+            self.messages = []
+            self.token_count = 0
+
+    @property
+    def usage_percent(self) -> float:
+        return self.token_count / self.context_window if self.context_window > 0 else 0.0
+
+    def compress_if_needed(self, ollama_client: OllamaClient):
+        if self.usage_percent <= 0.80:
+            return
+            
+        if len(self.messages) <= 5:
+            return # Not enough context to compress
+            
+        sys_msg = self.messages[0]
+        to_compress = self.messages[1:-4]
+        keep = self.messages[-4:]
+        
+        prompt = build_compression_prompt(to_compress)
+        
+        try:
+            summary = ollama_client.chat([{"role": "user", "content": prompt}])
+            compressed_msg = {"role": "system", "content": "[CONTEXT SUMMARY]:\n" + summary}
+            self.messages = [sys_msg, compressed_msg] + keep
+            
+            # Recalculate tokens
+            self.token_count = sum(estimate_tokens(m["content"]) for m in self.messages)
+        except Exception as e:
+            print(f"Error compressing context: {e}")

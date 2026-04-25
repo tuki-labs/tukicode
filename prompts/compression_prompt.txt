@@ -1,0 +1,12 @@
+Por favor, resume el siguiente historial de conversación de la manera más concisa posible.
+Debes preservar estrictamente la siguiente información:
+- Archivos leídos o editados
+- Decisiones técnicas tomadas
+- Bugs encontrados y su estado
+- Estado actual de la tarea global
+- Comandos ejecutados y sus resultados más importantes
+
+Genera el resumen en texto plano, en español.
+
+Historial a comprimir:
+{history_text}
