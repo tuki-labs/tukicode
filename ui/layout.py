@@ -221,7 +221,6 @@ class TukiApp:
     #This is the render of the banner. It renders the model, risk, and exit instructions.
     def _get_banner_text(self):
         text = (f"\n[bold blue]TukiCode v1.0.0[/bold blue]\n"
-                f"  [italic dim]The agent assistant powered for everywhere[/italic dim]\n\n"
                 f"  Model: [cyan]{self.config.model.name}[/cyan]\n"
                 f"  Risk: [yellow]{self.config.agent.risk_level}[/yellow]\n"
                 f"  [dim]Ctrl+S: Stop | Ctrl+C: Exit[/dim]\n"
@@ -397,7 +396,7 @@ class TukiApp:
 
         if text == "/site":
             #open browser
-            webbrowser.open("https://github.com/sb4ss")
+            webbrowser.open("https://tukicode.site")
             self._append_to_history(f"\n[bold purple]Opening TukiCode website...[/bold purple]\n")
             self._refresh_display(auto_scroll=True)
             return
