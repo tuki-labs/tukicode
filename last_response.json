@@ -1,0 +1,8 @@
+{
+  "tool": "run_shell",
+  "args": {
+    "command": "npm start",
+    "cwd": "simple-rest-api",
+    "timeout_seconds": 10
+  }
+}

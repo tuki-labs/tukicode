@@ -10,3 +10,4 @@ dist/
 build/
 data/
 scratch/
+last_response.json
