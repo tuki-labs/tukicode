@@ -1,8 +1,7 @@
-# 🦜 TukiCode
+
+![](./media/tukilogo.png)
 
 **TukiCode** es un agente de programación inteligente diseñado para ejecutarse localmente, proporcionando una interfaz de chat potente y segura para la manipulación de código, ejecución de comandos y búsqueda de información.
-
-![TukiCode Mascot](agent_icon.py) <!-- Referencia simbólica a la mascota ASCII -->
 
 ## 🚀 Características Principales
 
@@ -17,10 +16,13 @@
 
 1. Asegúrate de tener Python 3.10+ instalado.
 2. Instala las dependencias:
+
    ```bash
    pip install -r requirements.txt
    ```
+
 3. Si usas Ollama, asegúrate de que el servidor esté corriendo:
+
    ```bash
    ollama serve
    ```
@@ -28,17 +30,20 @@
 ## 📖 Uso
 
 Inicia una sesión de chat interactiva:
+
 ```bash
 python tuki.py chat
 ```
 
 ### Comandos Disponibles en Chat
+
 - `/help`: Muestra la lista de comandos.
 - `/clear`: Limpia la pantalla de la sesión actual.
 - `/copy [n]`: Copia el bloque de código `n` de la última respuesta al portapapeles.
 - `/exit`: Finaliza la sesión y guarda el historial.
 
 ### Comandos de Configuración
+
 ```bash
 python tuki.py config --setup ollama
 python tuki.py config --setup openrouter
