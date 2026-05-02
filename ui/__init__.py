@@ -1,5 +1,5 @@
 """Módulo de UI de TukiCode."""
 from .display import TukiDisplay
-from .input import TukiInput
+from .app import TukiApp
 
-__all__ = ['TukiDisplay', 'TukiInput']
+__all__ = ['TukiDisplay', 'TukiApp']

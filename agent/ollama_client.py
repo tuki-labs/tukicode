@@ -1,5 +1,5 @@
 import ollama
-from typing import Generator, List
+from typing import Generator, List, Union
 
 class OllamaNotAvailableError(Exception):
     pass
@@ -14,37 +14,60 @@ class OllamaClient:
         self.completion_tokens = 0
         self.total_tokens = 0
 
-    def chat(self, messages: List[dict]) -> str:
+    @property
+    def supports_tool_calling(self) -> bool:
+        supported_models = {"llama3.1", "llama3.2", "qwen2.5", "mistral", "mixtral", "llama3-groq"}
+        # Some models might have tags like llama3.1:8b, so we check if the base name is in supported
+        base_name = self.model_name.split(":")[0]
+        return base_name in supported_models
+
+    def chat(self, messages: List[dict], tools: List[dict] = None) -> dict:
         try:
-            response = ollama.chat(
-                model=self.model_name,
-                messages=messages,
-                options={
+            kwargs = {
+                "model": self.model_name,
+                "messages": messages,
+                "options": {
                     "temperature": self.temperature,
                     "num_predict": self.max_tokens
                 }
-            )
+            }
+            if self.supports_tool_calling and tools:
+                kwargs["tools"] = tools
+                
+            response = ollama.chat(**kwargs)
             self._update_usage(response.get("prompt_eval_count", 0), response.get("eval_count", 0))
-            return response['message']['content']
+            return response
         except Exception as e:
             raise OllamaNotAvailableError(f"Error llamando a Ollama: {str(e)}")
 
-    def chat_stream(self, messages: List[dict]) -> Generator[str, None, None]:
+    def chat_stream(self, messages: List[dict], tools: List[dict] = None) -> Generator[Union[str, dict], None, None]:
+        # Native tool calling with streaming in Ollama might return the tool call chunks or not stream at all
+        # We will yield chunks that can be strings or dicts depending on what we receive
         try:
-            response_stream = ollama.chat(
-                model=self.model_name,
-                messages=messages,
-                stream=True,
-                options={
+            kwargs = {
+                "model": self.model_name,
+                "messages": messages,
+                "stream": True,
+                "options": {
                     "temperature": self.temperature,
                     "num_predict": self.max_tokens
                 }
-            )
+            }
+            if self.supports_tool_calling and tools:
+                kwargs["tools"] = tools
+                
+            response_stream = ollama.chat(**kwargs)
             for chunk in response_stream:
                 if "eval_count" in chunk:
                     self._update_usage(chunk.get("prompt_eval_count", 0), chunk.get("eval_count", 0))
-                if 'message' in chunk and 'content' in chunk['message']:
-                    yield chunk['message']['content']
+                
+                # If chunk has tool_calls, yield the whole chunk so loop.py can handle native tool calling
+                if 'message' in chunk:
+                    msg = chunk['message']
+                    if 'tool_calls' in msg and msg['tool_calls']:
+                        yield chunk
+                    elif 'content' in msg and msg['content']:
+                        yield msg['content']
         except Exception as e:
             raise OllamaNotAvailableError(f"Error en stream de Ollama: {str(e)}")
 

@@ -2,8 +2,9 @@ import sqlite3
 import datetime
 import asyncio
 from pathlib import Path
-from .parser import parse_response, ToolCall, FinalResponse
+from .parser import parse_response, ToolCall, FinalResponse, extract_thinking
 from tools.base import RiskLevel
+import json
 
 class AgentLoop:
     def __init__(self, config, llm_client, tool_registry, context, display):
@@ -19,6 +20,26 @@ class AgentLoop:
         self.context.clear()
         self.context.add_message("system", sys_prompt)
 
+    def _get_native_tools(self):
+        native_tools = []
+        for t in self.tool_registry.get_schema():
+            properties = {}
+            for arg_name, arg_type in t["args"].items():
+                properties[arg_name] = {"type": "string"}
+            native_tools.append({
+                "type": "function",
+                "function": {
+                    "name": t["name"],
+                    "description": t["description"],
+                    "parameters": {
+                        "type": "object",
+                        "properties": properties,
+                        "required": list(t["args"].keys())
+                    }
+                }
+            })
+        return native_tools
+
     async def run_turn(self, user_message: str) -> str:
         self.context.add_message("user", user_message)
         
@@ -26,44 +47,77 @@ class AgentLoop:
             self.context.compress_if_needed(self.llm_client)
             
             messages = self.context.get_messages()
-            
-            # Note: We are using chat_stream which returns a generator.
-            # In an async context, it should ideally be an async generator.
-            # But ollama library's chat(stream=True) is a blocking generator.
-            # We can wrap it in a thread or use an async client.
-            # For simplicity, we'll run the blocking generator in a thread.
+            native_tools = self._get_native_tools()
             
             loop = asyncio.get_event_loop()
-            full_response = await loop.run_in_executor(None, self._chat_and_stream, messages)
+            full_response = await loop.run_in_executor(None, self._chat_and_stream, messages, native_tools)
             
-            # Debug: Guardar la respuesta cruda para inspección
+            # Debug
             try:
                 debug_path = Path("last_response.json")
-                debug_path.write_text(full_response, encoding="utf-8")
+                if isinstance(full_response, str):
+                    debug_path.write_text(full_response, encoding="utf-8")
+                else:
+                    debug_path.write_text(json.dumps(full_response, ensure_ascii=False), encoding="utf-8")
             except:
                 pass
             
-            parsed = parse_response(full_response)
+            # Extraer thinking antes de parsear
+            text_for_thinking = ""
+            if isinstance(full_response, str):
+                text_for_thinking = full_response
+            elif isinstance(full_response, dict):
+                if "message" in full_response:
+                    text_for_thinking = full_response["message"].get("content", "")
+                elif "choices" in full_response and len(full_response["choices"]) > 0:
+                    text_for_thinking = full_response["choices"][0].get("message", {}).get("content", "")
+                    
+            if text_for_thinking:
+                thinking, clean_text = extract_thinking(text_for_thinking)
+                if thinking:
+                    self.display.show_thinking(thinking)
+                else:
+                    self.display.show_thinking("", visible=False)
+                    
+                if isinstance(full_response, str):
+                    full_response = clean_text
+                elif isinstance(full_response, dict):
+                    if "message" in full_response:
+                        full_response["message"]["content"] = clean_text
+                    elif "choices" in full_response and len(full_response["choices"]) > 0:
+                        full_response["choices"][0]["message"]["content"] = clean_text
+            
+            # Parsear la respuesta (str o dict)
+            use_native = getattr(self.llm_client, "supports_tool_calling", False)
+            parsed = parse_response(full_response, use_native=use_native)
             
             if isinstance(parsed, ToolCall):
-                self.context.add_message("assistant", full_response)
+                # Guardamos lo que nos devolvió para que quede en el historial de contexto
+                if isinstance(full_response, str):
+                    self.context.add_message("assistant", full_response)
+                else:
+                    self.context.add_message("assistant", json.dumps(full_response))
                 
                 tool_item = self.tool_registry._tools.get(parsed.tool_name)
                 if tool_item:
                     from tools.base import BaseTool
                     tool_risk = tool_item.risk_level if isinstance(tool_item, BaseTool) else getattr(tool_item, "__tool_risk__")
+                    
                     if tool_risk.value >= RiskLevel.MEDIUM.value:
-                        # Use async confirmation if available (for UI), else fallback to sync
+                        args_str = str(parsed.args)
+                        if len(args_str) > 200: args_str = args_str[:197] + "..."
+                        msg = f"Tool: [bold cyan]{parsed.tool_name}[/bold cyan]\nArgs: {args_str}\nRisk: [bold yellow]{tool_risk.name}[/bold yellow]\n¿Confirmar?"
+                        
                         if hasattr(self.display, "confirm_async"):
-                            confirmed = await self.display.confirm_async(f"The tool [bold cyan]{parsed.tool_name}[/bold cyan] wants to run ({tool_risk.name} risk). Allow?")
+                            confirmed = await self.display.confirm_async(msg)
                         else:
-                            confirmed = self.display.confirm(f"The tool {parsed.tool_name} has {tool_risk.name} risk. Allow execution?")
+                            confirmed = self.display.confirm(msg)
                         
                         if not confirmed:
-                            self.context.add_message("tool_result", "Execution cancelled by the user.")
+                            self.context.add_message("tool_result", "Acción cancelada por el usuario.")
                             continue
                 
-                # Execute tool (might be blocking, run in executor)
+                # Execute tool
                 with self.display.show_spinner(f"Executing {parsed.tool_name}..."):
                     result = await loop.run_in_executor(None, self.tool_registry.execute, parsed.tool_name, parsed.args, self.config.agent.risk_level)
                 
@@ -84,9 +138,24 @@ class AgentLoop:
                 
         return "ReAct loop iteration limit reached."
 
-    def _chat_and_stream(self, messages):
-        stream = self.llm_client.chat_stream(messages)
-        return self.display.stream_response(stream)
+    def _chat_and_stream(self, messages, tools=None):
+        stream = self.llm_client.chat_stream(messages, tools=tools)
+        
+        full_dict = None
+        
+        def display_gen():
+            nonlocal full_dict
+            for chunk in stream:
+                if isinstance(chunk, str):
+                    yield chunk
+                elif isinstance(chunk, dict):
+                    full_dict = chunk
+                    
+        full_text = self.display.stream_response(display_gen())
+        
+        if full_dict:
+            return full_dict
+        return full_text
 
     def save_to_history(self, db_path: str, custom_title: str = None, session_id: int = None):
         Path(db_path).parent.mkdir(parents=True, exist_ok=True)
@@ -101,7 +170,6 @@ class AgentLoop:
                       content TEXT)''')
         
         date_str = datetime.datetime.now().isoformat()
-        import json
         content_json = json.dumps(self.context.get_messages(), ensure_ascii=False)
         
         title = custom_title
@@ -121,7 +189,6 @@ class AgentLoop:
         conn.close()
 
     def load_history(self, db_path: str, session_id: int):
-        import json
         if not Path(db_path).exists():
             return False
         conn = sqlite3.connect(db_path)
@@ -132,7 +199,6 @@ class AgentLoop:
             if row:
                 messages = json.loads(row[0])
                 self.context.messages = messages
-                # Recalculate tokens roughly
                 self.context.token_count = sum(len(m.get('content', '').split()) * 1.3 for m in messages)
                 return True
             return False

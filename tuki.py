@@ -22,8 +22,7 @@ from tools.registry import registry as tool_registry
 from agent.context import ConversationContext
 from agent.loop import AgentLoop
 from ui.display import TukiDisplay
-from ui.input import TukiInput, COMMANDS
-from ui.layout import TukiApp
+from ui.app import TukiApp
 from enum import Enum
 
 class ConfigComponent(str, Enum):
@@ -46,7 +45,6 @@ def chat(session_id: int = typer.Argument(None, help="ID of a previous session t
     loaded_integrations = load_integrations(config, tool_registry)
     
     display = TukiDisplay()
-    display.show_banner("1.0.0", config.model.name, config.agent.risk_level)
     
     if loaded_integrations:
         display.console.print(f"[dim]Loaded integrations: {', '.join(loaded_integrations)}[/dim]")
@@ -85,8 +83,9 @@ def chat(session_id: int = typer.Argument(None, help="ID of a previous session t
             display.show_error(f"Session ID {session_id} not found or could not be loaded.")
             raise typer.Exit(1)
             
-    # The UI will render the loaded context in its __init__ if any messages exist.
-    app_ui.render_loaded_context()
+    # La renderización del contexto cargado se puede hacer dentro del mount de la app o aquí
+    # Para Textual, lo haremos después de iniciar o pasando los mensajes.
+    # Por ahora, iniciamos la app.
     
     try:
         app_ui.run()

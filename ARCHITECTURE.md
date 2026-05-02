@@ -13,70 +13,71 @@ Este documento detalla la estructura interna, las funciones de cada archivo y c�
 El motor de inteligencia reside aquí:
 - **[loop.py](file:///d:/software/tukicode/agent/loop.py)**: El corazón del agente. Implementa el patrón **ReAct** (Reason + Act). Orquestra el envío de prompts al LLM, la ejecución de herramientas y la actualización del contexto.
 - **[context.py](file:///d:/software/tukicode/agent/context.py)**: Gestiona la memoria a corto plazo de la conversación. Incluye lógica para conteo de tokens y compresión de historial si se excede la ventana de contexto.
-- **[parser.py](file:///d:/software/tukicode/agent/parser.py)**: Analiza las respuestas del modelo usando expresiones regulares para identificar cuándo el agente quiere usar una herramienta (`ToolCall`) o dar una respuesta final (`FinalResponse`).
+- **[parser.py](file:///d:/software/tukicode/agent/parser.py)**: Analiza las respuestas del modelo para identificar cuándo el agente quiere usar una herramienta o dar una respuesta final.
 - **[ollama_client.py](file:///d:/software/tukicode/agent/ollama_client.py)**: Cliente para interactuar con la API local de Ollama.
 - **[openrouter_client.py](file:///d:/software/tukicode/agent/openrouter_client.py)**: Cliente para interactuar con la API de OpenRouter (modelos en la nube).
-- **[prompts.py](file:///d:/software/tukicode/agent/prompts.py)**: Define el "System Prompt" que instruye al modelo sobre cómo comportarse y cómo usar las herramientas.
-
-### 🔹 Herramientas (`/tools`)
-Capacidades externas del agente:
-- **[base.py](file:///d:/software/tukicode/tools/base.py)**: Clases base para herramientas y definición de niveles de riesgo (`LOW`, `MEDIUM`, `HIGH`).
-- **[registry.py](file:///d:/software/tukicode/tools/registry.py)**: Registro centralizado donde se dan de alta las herramientas disponibles. Controla los permisos de ejecución basados en el nivel de riesgo configurado.
-- **[file_tools.py](file:///d:/software/tukicode/tools/file_tools.py)**: Funciones para manipular el sistema de archivos (leer, escribir, listar, buscar).
-- **[shell_tools.py](file:///d:/software/tukicode/tools/shell_tools.py)**: Permite la ejecución de comandos en la terminal del sistema.
-- **[search_tools.py](file:///d:/software/tukicode/tools/search_tools.py)**: Integración para realizar búsquedas en la web.
 
 ### 🔹 Interfaz de Usuario (`/ui`)
-- **[layout.py](file:///d:/software/tukicode/ui/layout.py)**: Define la estructura visual a pantalla completa usando `prompt_toolkit`. Gestiona las ventanas de chat, mascot, banner y barra de tokens.
-- **[display.py](file:///d:/software/tukicode/ui/display.py)**: Abstracción de salida para formatear mensajes, errores, tablas y resultados de herramientas de manera atractiva usando `rich`.
-- **[input.py](file:///d:/software/tukicode/ui/input.py)**: Define la lógica de manejo de comandos de barra (`/`).
+La UI ha sido modernizada a una arquitectura basada en eventos usando **Textual**:
+- **[app.py](file:///d:/software/tukicode/ui/app.py)**: **La App Principal**. Define el layout, los estilos CSS y maneja los eventos del usuario. Reemplaza a los antiguos `layout.py` e `input.py`.
+- **[display.py](file:///d:/software/tukicode/ui/display.py)**: Capa de abstracción que actúa como puente entre el `AgentLoop` y la `TukiApp`. Asegura que los mensajes se rendericen correctamente en el hilo adecuado.
 
 ---
 
-## 🔄 Flujo de Interconexión
+## 🎨 Diseño Visual y UI (Textual)
 
-El siguiente diagrama muestra cómo fluye la información durante un turno de conversación:
+TukiCode utiliza **Textual** (un framework TUI basado en Python) para ofrecer una experiencia premium y estable.
 
-```mermaid
-sequenceDiagram
-    participant U as Usuario
-    participant UI as UI (layout.py)
-    participant L as Agent Loop (loop.py)
-    participant C as Context (context.py)
-    participant LLM as LLM Client
-    participant R as Registry (registry.py)
-    participant T as Tools
+### Componentes del Layout
+1.  **Header**: Muestra el título de la app y un reloj.
+2.  **Left Panel (#left-panel)**: Un widget `Static` que muestra la animación de Tuki usando un intervalo de actualización.
+3.  **Chat Log (#chat-log)**: Un widget `RichLog` que gestiona el historial de mensajes con scroll fluido y renderizado de Markdown.
+4.  **Thinking Panel (#thinking-panel)**: Un panel que aparece/desaparece dinámicamente sobre la barra de entrada para mostrar el razonamiento del agente.
+5.  **Input Bar (#input-bar)**: Campo de texto donde el usuario escribe.
+6.  **Status Bar (#status-bar)**: Muestra información en tiempo real (Modelo, Tokens, Nivel de Riesgo).
 
-    U->>UI: Escribe mensaje
-    UI->>L: run_turn(mensaje)
-    L->>C: add_message("user", mensaje)
-    
-    loop ReAct Loop
-        L->>C: get_messages()
-        C-->>L: Historial + Prompt
-        L->>LLM: chat_stream(mensajes)
-        LLM-->>UI: (Streaming de pensamiento)
-        LLM-->>L: Respuesta completa
-        L->>L: parse_response(respuesta)
-        
-        alt Es una Tool Call
-            L->>R: execute(tool, args)
-            R->>T: Ejecutar acción
-            T-->>R: Resultado
-            R-->>L: ToolResult
-            L->>UI: show_tool_result()
-            L->>C: add_message("tool_result", resultado)
-        else Es Final Response
-            L->>C: add_message("assistant", texto)
-            L-->>UI: return texto
-        end
-    end
-    
-    UI->>U: Muestra respuesta final
+### ¿Cómo funciona la comunicación?
+Debido a que Textual maneja su propio bucle de eventos, el agente (`AgentLoop`) corre en tareas asíncronas separadas. Para actualizar la UI sin causar errores de hilos:
+1.  El agente llama a `display.show_message()`.
+2.  `display.py` usa `app.call_later(app.add_message, ...)` para programar la actualización en el hilo principal de la UI.
+3.  Esto garantiza que la terminal no se rompa y que la interfaz sea reactiva.
+
+---
+
+## 🛠️ Cómo seguir extendiendo la UI
+
+### 1. Agregar nuevos Widgets
+Para añadir elementos (ej. una lista de archivos abiertos), edita el método `compose()` en `ui/app.py`:
+```python
+def compose(self) -> ComposeResult:
+    yield Header()
+    with Horizontal():
+        yield Static(id="mi-nuevo-panel") # Agrega esto
+        yield RichLog(id="chat-log")
+    # ...
 ```
 
+### 2. Cambiar Estilos (CSS)
+Textual usa una sintaxis similar a CSS3. Puedes modificar `TukiApp.CSS` en `ui/app.py` para cambiar colores, bordes o visibilidad:
+```css
+#mi-nuevo-panel {
+    background: #111;
+    border: solid #333;
+    width: 20;
+}
+```
+
+### 3. Agregar Comandos de Barra
+Nuevos comandos como `/stats` se deben agregar en `TukiApp.handle_command()`:
+```python
+elif text == "/stats":
+    self.add_message("system", f"Tokens usados: {self.context.token_count}")
+```
+
+---
+
 ## 🛠️ Tecnologías Clave
-- **[Rich](https://github.com/Textualize/rich)**: Para el renderizado de texto enriquecido, paneles, tablas y colores en la terminal.
-- **[Prompt Toolkit](https://github.com/prompt-toolkit/python-prompt-toolkit)**: Para la gestión de la UI interactiva, atajos de teclado y entrada de usuario multilínea.
-- **[Typer](https://typer.tiangolo.com/)**: Para la creación ágil de la interfaz de línea de comandos (CLI).
-- **[SQLite](https://www.sqlite.org/)**: Para el almacenamiento persistente del historial de conversaciones.
+- **[Textual](https://github.com/Textualize/textual)**: Framework principal para el layout y manejo de eventos TUI.
+- **[Rich](https://github.com/Textualize/rich)**: Para el renderizado de Markdown, colores ANSI y tablas.
+- **[Typer](https://typer.tiangolo.com/)**: Para la creación de la interfaz CLI de comandos.
+- **[SQLite](https://www.sqlite.org/)**: Para el almacenamiento persistente del historial.

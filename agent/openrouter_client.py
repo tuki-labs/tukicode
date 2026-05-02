@@ -1,6 +1,6 @@
 import httpx
 import json
-from typing import Generator, List
+from typing import Generator, List, Union
 
 class OpenRouterError(Exception):
     pass
@@ -24,27 +24,34 @@ class OpenRouterClient:
         self.total_tokens = 0
         self._client = httpx.Client(headers=self.headers, timeout=60.0)
 
-    def chat(self, messages: List[dict]) -> str:
+    @property
+    def supports_tool_calling(self) -> bool:
+        return True
+
+    def chat(self, messages: List[dict], tools: List[dict] = None) -> dict:
         payload = {
             "model": self.model_name,
             "messages": messages,
             "temperature": self.temperature,
             "max_tokens": self.max_tokens
         }
+        if self.supports_tool_calling and tools:
+            payload["tools"] = tools
+
         try:
             response = self._client.post(f"{self.base_url}/chat/completions", json=payload)
             response.raise_for_status()
             data = response.json()
             if 'choices' not in data:
                 raise OpenRouterError(f"Unexpected response: {data}")
-            content = data['choices'][0]['message']['content']
+                
             usage = data.get('usage', {})
             self._update_usage(usage.get('prompt_tokens', 0), usage.get('completion_tokens', 0))
-            return content
+            return data
         except Exception as e:
             raise OpenRouterError(f"Error calling OpenRouter: {str(e)}")
 
-    def chat_stream(self, messages: List[dict]) -> Generator[str, None, None]:
+    def chat_stream(self, messages: List[dict], tools: List[dict] = None) -> Generator[Union[str, dict], None, None]:
         payload = {
             "model": self.model_name,
             "messages": messages,
@@ -52,6 +59,9 @@ class OpenRouterClient:
             "max_tokens": self.max_tokens,
             "stream": True
         }
+        if self.supports_tool_calling and tools:
+            payload["tools"] = tools
+
         try:
             with self._client.stream("POST", f"{self.base_url}/chat/completions", json=payload) as response:
                 response.raise_for_status()
@@ -68,7 +78,10 @@ class OpenRouterClient:
                         chunk = json.loads(line)
                         if 'choices' in chunk and len(chunk['choices']) > 0:
                             delta = chunk['choices'][0].get('delta', {})
-                            if 'content' in delta:
+                            
+                            if 'tool_calls' in delta and delta['tool_calls']:
+                                yield chunk
+                            elif 'content' in delta and delta['content'] is not None:
                                 yield delta['content']
                         
                         if 'usage' in chunk:
