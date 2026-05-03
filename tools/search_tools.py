@@ -6,7 +6,7 @@ from datetime import datetime
 from .base import tool, ToolResult, RiskLevel
 from .registry import registry
 
-@tool("search_code", "Searches for a pattern in files", RiskLevel.NONE)
+@tool("search_code", "Searches for a pattern in files", RiskLevel.MEDIUM)
 def search_code(query: str, path: str, file_extensions: list = None, case_sensitive: bool = False, context_lines: int = 2) -> ToolResult:
     p = pathlib.Path(path)
     if not p.exists():
@@ -70,7 +70,7 @@ def search_code(query: str, path: str, file_extensions: list = None, case_sensit
         return ToolResult(success=True, output="No se encontraron coincidencias.")
     return ToolResult(success=True, output="\n".join(results[:50]))
 
-@tool("find_files", "Searches for files by glob pattern", RiskLevel.NONE)
+@tool("find_files", "Searches for files by glob pattern", RiskLevel.MEDIUM)
 def find_files(pattern: str, root: str, max_depth: int = 5, ignore: list = None) -> ToolResult:
     p = pathlib.Path(root)
     if not p.exists():
@@ -92,7 +92,7 @@ def find_files(pattern: str, root: str, max_depth: int = 5, ignore: list = None)
             
     return ToolResult(success=True, output="\n".join(results) if results else "No se encontraron archivos.")
 
-@tool("list_dir", "Lista el contenido de un directorio", RiskLevel.NONE)
+@tool("list_dir", "Lista el contenido de un directorio", RiskLevel.MEDIUM)
 def list_dir(path: str, recursive: bool = False, show_hidden: bool = False) -> ToolResult:
     p = pathlib.Path(path)
     if not p.exists() or not p.is_dir():

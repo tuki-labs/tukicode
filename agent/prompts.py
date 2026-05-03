@@ -1,9 +1,6 @@
 import json
 import pathlib
 from typing import List, Dict
-
-TOOL_SCHEMA_TEMPLATE = "{schema}"
-
 import sys
 
 def get_base_dir():
@@ -19,15 +16,28 @@ def build_system_prompt(config, tool_registry) -> str:
     with open(prompt_path, "r", encoding="utf-8") as f:
         data = json.load(f)
         
-    system_base = data.get("system", "")
+    template = data.get("system", "")
     
-    # Inyectar tools usando el registry
+    # Obtener el esquema de herramientas
     schema = tool_registry.get_schema()
     schema_str = json.dumps(schema, indent=2, ensure_ascii=False)
     
-    full_prompt = f"{system_base}\n"
-    full_prompt += f"Tu nivel de riesgo actual es: {config.agent.risk_level}\n"
-    full_prompt += f"Las herramientas disponibles son:\n{schema_str}\n"
+    # Detección de entorno
+    home = pathlib.Path.home()
+    desktop = home / "Desktop"
+    if not desktop.exists():
+        escritorio = home / "Escritorio"
+        if escritorio.exists():
+            desktop = escritorio
+
+    # Rellenar el template
+    full_prompt = template.format(
+        cwd=pathlib.Path.cwd(),
+        home=home,
+        desktop=desktop,
+        risk_level=config.agent.risk_level,
+        tools=schema_str
+    )
     
     return full_prompt
 

@@ -12,9 +12,11 @@ class ConversationContext:
         self.token_count: int = 0
         self.context_window: int = context_window
 
-    def add_message(self, role: str, content: str):
-        self.messages.append({"role": role, "content": content})
-        self.token_count += estimate_tokens(content)
+    def add_message(self, role: str, content: str, **kwargs):
+        msg = {"role": role, "content": content}
+        msg.update(kwargs)
+        self.messages.append(msg)
+        self.token_count += estimate_tokens(content or "")
 
     def get_messages(self) -> List[Dict[str, str]]:
         return self.messages

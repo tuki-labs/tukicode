@@ -4,9 +4,9 @@ import pathlib
 from .base import tool, ToolResult, RiskLevel
 from .registry import registry
 
-@tool("read_file", "Reads the content of a file", RiskLevel.NONE)
+@tool("read_file", "Reads the content of a file", RiskLevel.MEDIUM)
 def read_file(path: str) -> ToolResult:
-    p = pathlib.Path(path)
+    p = pathlib.Path(path).expanduser().resolve()
     if not p.exists() or not p.is_file():
         return ToolResult(success=False, output="", error=f"The file '{path}' does not exist or is not a valid file.")
     
@@ -18,9 +18,9 @@ def read_file(path: str) -> ToolResult:
     except Exception as e:
         return ToolResult(success=False, output="", error=f"Error reading file: {str(e)}")
 
-@tool("write_file", "Writes the file. If create_dirs=True, creates folders", RiskLevel.MEDIUM)
+@tool("write_file", "Writes the file. If create_dirs=True, creates folders", RiskLevel.HIGH)
 def write_file(path: str, content: str, create_dirs: bool = True) -> ToolResult:
-    p = pathlib.Path(path)
+    p = pathlib.Path(path).expanduser().resolve()
     if create_dirs:
         p.parent.mkdir(parents=True, exist_ok=True)
     
@@ -34,13 +34,13 @@ def write_file(path: str, content: str, create_dirs: bool = True) -> ToolResult:
                 pass
 
         p.write_text(content, encoding="utf-8")
-        return ToolResult(success=True, output=f"File '{path}' successfully written.")
+        return ToolResult(success=True, output=f"File '{p}' successfully written.")
     except Exception as e:
         return ToolResult(success=False, output="", error=f"Error writing file: {str(e)}")
 
-@tool("patch_file", "Replaces old_str with new_str in the file", RiskLevel.MEDIUM)
+@tool("patch_file", "Replaces old_str with new_str in the file", RiskLevel.HIGH)
 def patch_file(path: str, old_str: str, new_str: str) -> ToolResult:
-    p = pathlib.Path(path)
+    p = pathlib.Path(path).expanduser().resolve()
     if not p.exists() or not p.is_file():
         return ToolResult(success=False, output="", error=f"The file '{path}' does not exist.")
     
@@ -68,24 +68,45 @@ def patch_file(path: str, old_str: str, new_str: str) -> ToolResult:
             tofile=f"b/{path}",
             lineterm=""
         ))
-        return ToolResult(success=True, output=f"File '{path}' successfully modified.", metadata={"diff": diff})
+        return ToolResult(success=True, output=f"File '{p}' successfully modified.", metadata={"diff": diff})
     except Exception as e:
         return ToolResult(success=False, output="", error=f"Error patching file: {str(e)}")
 
-@tool("delete_file", "Deletes the file", RiskLevel.HIGH)
+@tool("delete_file", "Deletes a single file", RiskLevel.HIGH)
 def delete_file(path: str) -> ToolResult:
-    p = pathlib.Path(path)
+    p = pathlib.Path(path).expanduser().resolve()
     if not p.exists():
         return ToolResult(success=False, output="", error=f"The file '{path}' does not exist.")
+    if p.is_dir():
+        return ToolResult(success=False, output="", error=f"'{path}' is a directory. Use delete_directory to delete folders.")
     try:
         p.unlink()
-        return ToolResult(success=True, output=f"File '{path}' deleted.")
+        return ToolResult(success=True, output=f"File '{p}' deleted.")
     except Exception as e:
         return ToolResult(success=False, output="", error=f"Error deleting file: {str(e)}")
 
-@tool("get_project_tree", "Returns the folder tree", RiskLevel.NONE)
+@tool("delete_directory", "Deletes a folder and all its contents recursively", RiskLevel.HIGH)
+def delete_directory(path: str) -> ToolResult:
+    import shutil
+    p = pathlib.Path(path).expanduser().resolve()
+    if not p.exists():
+        return ToolResult(success=False, output="", error=f"The directory '{path}' does not exist.")
+    if not p.is_dir():
+        return ToolResult(success=False, output="", error=f"'{path}' is not a directory.")
+    try:
+        shutil.rmtree(p)
+        return ToolResult(success=True, output=f"Directory '{p}' and all its contents have been deleted.")
+    except Exception as e:
+        return ToolResult(success=False, output="", error=f"Error deleting directory: {str(e)}")
+
+@tool("get_project_tree", "Returns the folder tree", RiskLevel.MEDIUM)
 def get_project_tree(path: str, max_depth: int = 4, ignore: list = None) -> ToolResult:
-    p = pathlib.Path(path)
+    # Asegurar tipos
+    try:
+        max_depth = int(max_depth)
+    except:
+        max_depth = 4
+    p = pathlib.Path(path).expanduser().resolve()
     if not p.exists() or not p.is_dir():
         return ToolResult(success=False, output="", error=f"Directory '{path}' not found.")
     
@@ -117,4 +138,5 @@ registry.register(read_file)
 registry.register(write_file)
 registry.register(patch_file)
 registry.register(delete_file)
+registry.register(delete_directory)
 registry.register(get_project_tree)

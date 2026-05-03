@@ -23,6 +23,7 @@ class ModelConfig:
 @dataclass
 class AgentConfig:
     risk_level: str = "medium"
+    autonomy_level: str = "low"
     language: str = "es"
     think_aloud: bool = True
     stream: bool = True
@@ -64,6 +65,9 @@ class Config:
     history: HistoryConfig = field(default_factory=HistoryConfig)
     integrations: IntegrationsConfig = field(default_factory=IntegrationsConfig)
     openrouter: OpenRouterConfig = field(default_factory=OpenRouterConfig)
+
+    def save(self):
+        save_config(self)
 
 _config_instance: Optional[Config] = None
 
@@ -141,6 +145,7 @@ context_window = {config.model.context_window}
 
 [agent]
 risk_level = "{config.agent.risk_level}"
+autonomy_level = "{config.agent.autonomy_level}"
 language = "{config.agent.language}"
 think_aloud = {"true" if config.agent.think_aloud else "false"}
 stream = {"true" if config.agent.stream else "false"}

@@ -42,6 +42,7 @@ class AgentLoop:
 
     async def run_turn(self, user_message: str) -> str:
         self.context.add_message("user", user_message)
+        self._turn_confirmed = False # Reset confirmation for each turn
         
         for _ in range(20): # max 20 iterations
             self.context.compress_if_needed(self.llm_client)
@@ -93,20 +94,46 @@ class AgentLoop:
             
             if isinstance(parsed, ToolCall):
                 # Guardamos lo que nos devolvió para que quede en el historial de contexto
-                if isinstance(full_response, str):
-                    self.context.add_message("assistant", full_response)
+                if isinstance(full_response, dict):
+                    # Extraer el mensaje (OpenRouter o Ollama)
+                    msg_obj = {}
+                    if "choices" in full_response:
+                        msg_obj = full_response["choices"][0].get("message", {})
+                    elif "message" in full_response:
+                        msg_obj = full_response["message"]
+                    
+                    # Guardar con el formato correcto de roles y tool_calls
+                    self.context.add_message("assistant", msg_obj.get("content"), tool_calls=msg_obj.get("tool_calls"))
                 else:
-                    self.context.add_message("assistant", json.dumps(full_response))
+                    self.context.add_message("assistant", str(full_response))
                 
                 tool_item = self.tool_registry._tools.get(parsed.tool_name)
                 if tool_item:
                     from tools.base import BaseTool
                     tool_risk = tool_item.risk_level if isinstance(tool_item, BaseTool) else getattr(tool_item, "__tool_risk__")
                     
-                    if tool_risk.value >= RiskLevel.MEDIUM.value:
-                        args_str = str(parsed.args)
-                        if len(args_str) > 200: args_str = args_str[:197] + "..."
-                        msg = f"Tool: [bold cyan]{parsed.tool_name}[/bold cyan]\nArgs: {args_str}\nRisk: [bold yellow]{tool_risk.name}[/bold yellow]\n¿Confirmar?"
+                    # Determine if confirmation is needed based on autonomy
+                    autonomy = self.config.agent.autonomy_level.lower()
+                    should_prompt = True
+                    
+                    if autonomy == "high":
+                        if self._turn_confirmed:
+                            should_prompt = False
+                    elif autonomy == "medium":
+                        # Solo preguntar para riesgos HIGH o herramientas destructivas/creativas
+                        if tool_risk.value < RiskLevel.HIGH.value:
+                            should_prompt = False
+                    
+                    if should_prompt and tool_risk.value >= RiskLevel.MEDIUM.value:
+                        # Extraer detalles específicos para el prompt
+                        details = ""
+                        if "command" in parsed.args: details = f"Command: [yellow]{parsed.args['command']}[/yellow]"
+                        elif "path" in parsed.args: details = f"Path: [yellow]{parsed.args['path']}[/yellow]"
+                        elif "content" in parsed.args: 
+                            content_snippet = parsed.args['content'][:50] + "..." if len(parsed.args['content']) > 50 else parsed.args['content']
+                            details = f"Content: [yellow]{content_snippet}[/yellow]"
+                        
+                        msg = f"[bold yellow]Security Check[/bold yellow]\nAction: [cyan]{parsed.tool_name}[/cyan]\nRisk: [yellow]{tool_risk.name}[/yellow]\n{details}\n¿Permitir ejecución?"
                         
                         if hasattr(self.display, "confirm_async"):
                             confirmed = await self.display.confirm_async(msg)
@@ -114,11 +141,18 @@ class AgentLoop:
                             confirmed = self.display.confirm(msg)
                         
                         if not confirmed:
-                            self.context.add_message("tool_result", "Acción cancelada por el usuario.")
+                            self.context.add_message("tool", "Action cancelled by user.", tool_call_id=parsed.call_id)
                             continue
+                        
+                        self._turn_confirmed = True # Marcar que el usuario ya autorizó algo en este turno
                 
                 # Execute tool
-                with self.display.show_spinner(f"Executing {parsed.tool_name}..."):
+                details = ""
+                if "command" in parsed.args: details = parsed.args["command"]
+                elif "path" in parsed.args: details = parsed.args["path"]
+                if len(details) > 60: details = details[:57] + "..."
+                
+                with self.display.show_spinner(f"Executing {parsed.tool_name}", details=details):
                     result = await loop.run_in_executor(None, self.tool_registry.execute, parsed.tool_name, parsed.args, self.config.agent.risk_level)
                 
                 self.display.show_tool_result(parsed.tool_name, result)
@@ -130,7 +164,8 @@ class AgentLoop:
                 if result.error:
                     result_str += f"\nError:\n{result.error}"
                     
-                self.context.add_message("tool_result", result_str)
+                # Usar el call_id para compatibilidad nativa (OpenRouter/Ollama)
+                self.context.add_message("tool", result_str, tool_call_id=parsed.call_id)
             
             elif isinstance(parsed, FinalResponse):
                 self.context.add_message("assistant", parsed.text)
@@ -138,10 +173,47 @@ class AgentLoop:
                 
         return "ReAct loop iteration limit reached."
 
+    def _merge_delta(self, target: dict, source: dict):
+        """Fusiona un chunk de delta en un diccionario acumulado."""
+        # Formato OpenRouter / OpenAI
+        if "choices" in source and len(source["choices"]) > 0:
+            delta = source["choices"][0].get("delta", {})
+            if "tool_calls" in delta:
+                if "choices" not in target:
+                    target["choices"] = [{"message": {"tool_calls": []}}]
+                
+                target_tc = target["choices"][0]["message"]["tool_calls"]
+                for stc in delta["tool_calls"]:
+                    idx = stc.get("index", 0)
+                    while len(target_tc) <= idx:
+                        target_tc.append({"id": "", "type": "function", "function": {"name": "", "arguments": ""}})
+                    
+                    ttc = target_tc[idx]
+                    if "id" in stc: ttc["id"] += stc["id"]
+                    func = stc.get("function", {})
+                    if "name" in func: ttc["function"]["name"] += func["name"]
+                    if "arguments" in func: ttc["function"]["arguments"] += func["arguments"]
+            
+            # Mantener otros metadatos
+            for key in ["id", "model", "object"]:
+                if key in source: target[key] = source[key]
+        
+        # Formato Ollama
+        if "message" in source:
+            if "choices" not in target:
+                target["choices"] = [{"message": {"content": "", "tool_calls": []}}]
+            
+            tmsg = target["choices"][0]["message"]
+            smsg = source["message"]
+            if "content" in smsg and smsg["content"]:
+                tmsg["content"] += smsg["content"]
+            if "tool_calls" in smsg:
+                tmsg["tool_calls"] = smsg["tool_calls"] # Ollama suele mandar el tool_call completo
+
     def _chat_and_stream(self, messages, tools=None):
         stream = self.llm_client.chat_stream(messages, tools=tools)
         
-        full_dict = None
+        full_dict = {}
         
         def display_gen():
             nonlocal full_dict
@@ -149,11 +221,11 @@ class AgentLoop:
                 if isinstance(chunk, str):
                     yield chunk
                 elif isinstance(chunk, dict):
-                    full_dict = chunk
+                    self._merge_delta(full_dict, chunk)
                     
         full_text = self.display.stream_response(display_gen())
         
-        if full_dict:
+        if full_dict and "choices" in full_dict:
             return full_dict
         return full_text
 
@@ -199,7 +271,8 @@ class AgentLoop:
             if row:
                 messages = json.loads(row[0])
                 self.context.messages = messages
-                self.context.token_count = sum(len(m.get('content', '').split()) * 1.3 for m in messages)
+                # Asegurar que content sea string para el conteo de tokens
+                self.context.token_count = sum(len((m.get('content') or '').split()) * 1.3 for m in messages)
                 return True
             return False
         except Exception:

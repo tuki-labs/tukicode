@@ -1,5 +1,6 @@
 import subprocess
 import time
+from typing import Union
 from .base import tool, ToolResult, RiskLevel
 from .registry import registry
 
@@ -16,7 +17,13 @@ def is_blocked(command: str) -> bool:
     return False
 
 @tool("run_shell", "Executes a command in the terminal", RiskLevel.HIGH)
-def run_shell(command: str, cwd: str = None, timeout_seconds: int = 30) -> ToolResult:
+def run_shell(command: str, cwd: str = None, timeout_seconds: Union[int, str] = 30) -> ToolResult:
+    # Asegurar tipos correctos
+    try:
+        timeout_seconds = int(timeout_seconds)
+    except:
+        timeout_seconds = 30
+
     if is_blocked(command):
         return ToolResult(success=False, output="", error=f"The command contains security-blocked patterns.")
     

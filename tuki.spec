@@ -3,7 +3,7 @@
 
 a = Analysis(
     ['tuki.py'],
-    pathex=['.'],
+    pathex=[],
     binaries=[],
     datas=[('prompts', 'prompts')],
     hiddenimports=[],
