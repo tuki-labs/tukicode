@@ -111,17 +111,23 @@ def run_shell(command: str, cwd: str = None, timeout_seconds: Union[int, str] = 
 
     if background:
         try:
-            # Evitar doble envoltorio si el comando ya parece completo
-            if "powershell" in command.lower() or "cmd.exe" in command.lower() or "&&" in command:
-                # Si tiene && o ya es un shell, lo lanzamos vía cmd para mayor compatibilidad en Windows
-                full_command = f"cmd.exe /c {command}" if "cmd.exe" not in command.lower() else command
-            else:
-                shell_path = r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"
-                full_command = f"{shell_path} -NoProfile -ExecutionPolicy Bypass -Command \"{command}\""
+            # MODO TERMINAL REAL: Spawnear un shell persistente y enviarle los comandos
+            shell_path = r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"
             
-            # Spawnear con dimensiones mayores para QRs grandes
-            proc = PtyProcess.spawn(full_command, cwd=cwd, env=env, dimensions=(40, 120))
+            # Spawnear el shell directamente (sin -Command para que no se cierre)
+            proc = PtyProcess.spawn(shell_path, cwd=cwd, env=env, dimensions=(40, 120))
             pid = proc.pid
+            
+            # "Teclear" los comandos en la terminal
+            # Usamos \r\n para simular el Enter de Windows
+            if cwd:
+                proc.write(f"Set-Location -Path '{cwd}'\r\n")
+            
+            # Limpiar la pantalla inicial para que el log empiece limpio
+            proc.write("Clear-Host\r\n")
+            
+            # Ejecutar el comando del usuario
+            proc.write(f"{command}\r\n")
             
             _bg_processes[pid] = {
                 "process": proc,
@@ -138,11 +144,11 @@ def run_shell(command: str, cwd: str = None, timeout_seconds: Union[int, str] = 
             
             return ToolResult(
                 success=True, 
-                output=f"Process started in a REAL PTY (PID {pid}, 120x40). Expo QR codes and interactive elements will be captured.",
+                output=f"Interactive Terminal started (PID {pid}, 120x40). Capturing live output...",
                 metadata={"pid": pid, "background": True, "pty": True}
             )
         except Exception as e:
-            return ToolResult(success=False, output="", error=f"Error starting PTY process: {str(e)}")
+            return ToolResult(success=False, output="", error=f"Error starting PTY: {str(e)}")
 
     # Ejecución normal para comandos rápidos
     start_time = time.time()
