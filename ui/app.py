@@ -1,11 +1,13 @@
 from textual.app import App, ComposeResult
-from textual.widgets import Header, Footer, Input, RichLog, Static
+from textual.widgets import Header, Footer, Input, RichLog, Static, DirectoryTree, OptionList
+from textual.widgets.option_list import Option
 from textual.containers import Horizontal, Vertical, Container
 from textual.binding import Binding
 from rich.markdown import Markdown
 from rich.panel import Panel
 from agent_icon import TukiAnimation
 import asyncio
+from ui.screens import ModelSelectScreen, ApiKeyScreen
 
 class TukiApp(App):
     CSS = """
@@ -18,11 +20,21 @@ class TukiApp(App):
     }
     #left-panel {
         width: 38;
-        height: 12;
         border: none;
         margin: 1 0 0 1;
         padding: 0;
         background: transparent;
+    }
+    #mascot-container {
+        height: 12;
+        background: transparent;
+    }
+    #file-explorer {
+        height: 1fr;
+        border: solid #333;
+        background: #0d0d0d;
+        margin-top: 1;
+        scrollbar-size: 1 1;
     }
     #chat-area {
         height: 1fr;
@@ -103,7 +115,9 @@ class TukiApp(App):
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
         with Horizontal(id="main-container"):
-            yield Static(id="left-panel")
+            with Vertical(id="left-panel"):
+                yield Static(id="mascot-container")
+                yield DirectoryTree("./", id="file-explorer")
             with Vertical(id="chat-area"):
                 yield RichLog(id="chat-log", wrap=True, highlight=True, markup=True)
                 yield Static("", id="active-response")
@@ -136,7 +150,7 @@ class TukiApp(App):
     def update_mascot(self) -> None:
         from rich.text import Text
         frame = self.anim.get_current_frame()
-        self.query_one("#left-panel").update(Text.from_ansi("\n".join(frame)))
+        self.query_one("#mascot-container").update(Text.from_ansi("\n".join(frame)))
 
     def update_status(self) -> None:
         model = self.config.model.name
@@ -186,6 +200,17 @@ class TukiApp(App):
             input_bar.styles.border = ("solid", "#444")
             self._confirm_future = None
 
+    async def on_directory_tree_file_selected(self, event: DirectoryTree.FileSelected) -> None:
+        """Al seleccionar un archivo en el árbol, pedir a Tuki que lo analice."""
+        path = str(event.path)
+        self.add_message("system", f"Analyzing file: [cyan]{path}[/cyan]")
+        
+        # Enviar mensaje automático al agente
+        user_text = f"Read and analyze the file: {path}"
+        self.add_message("user", user_text)
+        self._is_running = True
+        asyncio.create_task(self.run_agent(user_text))
+
     async def handle_command(self, text):
         parts = text.split()
         if not parts: return
@@ -223,19 +248,17 @@ class TukiApp(App):
             self.action_copy_code()
         elif cmd == "/model":
             if not args:
-                self.add_message("system", f"Current model: {self.config.model.name}")
+                options = self.get_model_options()
+                def select_callback(choice_id):
+                    if choice_id and ":" in str(choice_id):
+                        provider, model_name = str(choice_id).split(":", 1)
+                        self.handle_provider_switch(provider.lower(), model_name)
+                
+                self.push_screen(ModelSelectScreen(options), select_callback)
             else:
                 new_model = args[0]
-                self.config.model.name = new_model
-                self.config.save()
-                from agent.ollama_client import OllamaClient
-                from agent.openrouter_client import OpenRouterClient
-                if self.config.model.provider == "ollama":
-                    self.client = OllamaClient(new_model, self.config.model.temperature, self.config.model.max_tokens, True)
-                else:
-                    self.client = OpenRouterClient(self.config.model.api_key, new_model, self.config.model.temperature, self.config.model.max_tokens, True)
-                self.agent_loop.llm_client = self.client
-                self.add_message("system", f"Model changed to {new_model}")
+                provider = self.guess_provider(new_model)
+                self.handle_provider_switch(provider, new_model)
         elif cmd == "/risk":
             if not args:
                 self.add_message("system", f"Current risk: {self.config.agent.risk_level}")
@@ -263,6 +286,139 @@ class TukiApp(App):
             self.show_history()
         else:
             self.add_message("error", f"Unknown command: {cmd}")
+
+    def update_client(self) -> None:
+        """Actualiza el cliente LLM según la configuración actual con manejo de errores."""
+        from agent.ollama_client import OllamaClient
+        from agent.openrouter_client import OpenRouterClient
+        from agent.gemini_client import GeminiClient
+        from agent.anthropic_client import AnthropicClient
+        
+        provider = self.config.model.provider.lower()
+        model_name = self.config.model.name
+        
+        try:
+            if provider == "gemini":
+                if not self.config.gemini.api_key: raise ValueError("Gemini API Key is missing.")
+                self.client = GeminiClient(self.config.gemini.model, self.config.model.temperature, self.config.model.max_tokens, True, self.config.gemini.api_key)
+            elif provider == "anthropic":
+                if not self.config.anthropic.api_key: raise ValueError("Anthropic API Key is missing.")
+                self.client = AnthropicClient(self.config.anthropic.model, self.config.model.temperature, self.config.model.max_tokens, True, self.config.anthropic.api_key)
+            elif provider == "openrouter":
+                if not self.config.openrouter.api_key: raise ValueError("OpenRouter API Key is missing.")
+                self.client = OpenRouterClient(model_name, self.config.model.temperature, self.config.model.max_tokens, True, self.config.openrouter.api_key)
+            else:
+                self.client = OllamaClient(model_name, self.config.model.temperature, self.config.model.max_tokens, True)
+                if not self.client.is_available():
+                    raise ConnectionError("Ollama is not running. Start it with 'ollama serve'.")
+            
+            self.agent_loop.llm_client = self.client
+            self.update_status()
+            self.add_message("system", f"Successfully switched to [bold cyan]{model_name}[/bold cyan] ({provider.upper()})")
+        except Exception as e:
+            self.add_message("error", f"Failed to switch model: {str(e)}")
+            # Intentar volver a Ollama si falla
+            if provider != "ollama":
+                self.add_message("system", "Reverting to Ollama default...")
+                self.config.model.provider = "ollama"
+                self.update_client()
+
+    def handle_provider_switch(self, provider: str, model_name: str = None) -> None:
+        """Lógica para cambiar de proveedor, pidiendo API key si es necesario."""
+        self.config.model.provider = provider
+        if model_name:
+            self.config.model.name = model_name
+        
+        # Verificar si necesita API Key
+        needs_key = provider in ["gemini", "anthropic", "openrouter"]
+        current_key = ""
+        if provider == "gemini": current_key = self.config.gemini.api_key
+        elif provider == "anthropic": current_key = self.config.anthropic.api_key
+        elif provider == "openrouter": current_key = self.config.openrouter.api_key
+        
+        if needs_key and not current_key:
+            def api_callback(key):
+                if key:
+                    if provider == "gemini": 
+                        self.config.gemini.api_key = key
+                        if model_name: 
+                            self.config.gemini.model = model_name
+                            if model_name not in self.config.gemini.models: self.config.gemini.models.append(model_name)
+                    elif provider == "anthropic": 
+                        self.config.anthropic.api_key = key
+                        if model_name: 
+                            self.config.anthropic.model = model_name
+                            if model_name not in self.config.anthropic.models: self.config.anthropic.models.append(model_name)
+                    elif provider == "openrouter": 
+                        self.config.openrouter.api_key = key
+                        if model_name and model_name not in self.config.openrouter.models: self.config.openrouter.models.append(model_name)
+                    self.config.save()
+                    self.update_client()
+                    self.add_message("system", f"Provider changed to {provider.upper()} and API Key saved.")
+                else:
+                    self.add_message("error", f"API Key required for {provider.upper()}")
+            
+            self.push_screen(ApiKeyScreen(provider.upper()), api_callback)
+        else:
+            if provider == "gemini" and model_name: 
+                self.config.gemini.model = model_name
+                if model_name not in self.config.gemini.models: self.config.gemini.models.append(model_name)
+            elif provider == "anthropic" and model_name: 
+                self.config.anthropic.model = model_name
+                if model_name not in self.config.anthropic.models: self.config.anthropic.models.append(model_name)
+            elif provider == "openrouter" and model_name:
+                if model_name not in self.config.openrouter.models: self.config.openrouter.models.append(model_name)
+                
+            self.config.save()
+            self.update_client()
+            self.add_message("system", f"Provider changed to {provider.upper()}")
+
+    def get_model_options(self) -> list:
+        """Obtiene la lista de modelos con indicadores de estado e historial."""
+        options = []
+        curr_provider = self.config.model.provider.lower()
+        curr_model = self.config.model.name
+        
+        def fmt_option(p, m):
+            is_active = (p == curr_provider and m == curr_model)
+            text = f"  {m}"
+            if is_active: text += " [b](active)[/b]"
+            return Option(text, id=f"{p}:{m}")
+
+        # 1. Ollama
+        options.append(Option("[b][cyan]Ollama (Local)[/cyan][/b]", id="header:ollama", disabled=True))
+        try:
+            from agent.ollama_client import OllamaClient
+            o_client = OllamaClient(curr_model, 0, 0, False)
+            for m in o_client.list_models():
+                options.append(fmt_option("ollama", m))
+        except Exception:
+            options.append(Option("  (Error connecting to Ollama)", disabled=True))
+
+        # 2. Google
+        options.append(Option("[b][cyan]Google (Gemini)[/cyan][/b]", id="header:gemini", disabled=True))
+        for m in self.config.gemini.models:
+            options.append(fmt_option("gemini", m))
+
+        # 3. Anthropic
+        options.append(Option("[b][cyan]Anthropic (Claude)[/cyan][/b]", id="header:anthropic", disabled=True))
+        for m in self.config.anthropic.models:
+            options.append(fmt_option("anthropic", m))
+
+        # 4. OpenRouter
+        options.append(Option("[b][cyan]OpenRouter (Cloud)[/cyan][/b]", id="header:openrouter", disabled=True))
+        for m in self.config.openrouter.models:
+            options.append(fmt_option("openrouter", m))
+        
+        return options
+
+    def guess_provider(self, model_name: str) -> str:
+        """Adivina el proveedor basado en el nombre del modelo."""
+        m = model_name.lower()
+        if "gemini" in m: return "gemini"
+        if "claude" in m or "anthropic" in m: return "anthropic"
+        if "/" in m: return "openrouter" # Ejemplo: openai/gpt-4o
+        return "ollama"
 
     def save_session(self) -> None:
         from tuki import get_app_dir

@@ -49,20 +49,45 @@ def chat(session_id: int = typer.Argument(None, help="ID of a previous session t
     if loaded_integrations:
         display.console.print(f"[dim]Loaded integrations: {', '.join(loaded_integrations)}[/dim]")
 
-    if config.openrouter.enabled:
+    provider = config.model.provider.lower()
+    
+    if provider == "gemini":
+        try:
+            from agent.gemini_client import GeminiClient
+            client = GeminiClient(
+                model_name=config.gemini.model if not model else model,
+                temperature=config.model.temperature,
+                max_tokens=config.model.max_tokens,
+                stream=config.agent.stream,
+                api_key=config.gemini.api_key
+            )
+        except ImportError:
+            display.show_error("Gemini library not found. Run: pip install google-generativeai")
+            raise typer.Exit(1)
+    elif provider == "anthropic":
+        try:
+            from agent.anthropic_client import AnthropicClient
+            client = AnthropicClient(
+                model_name=config.anthropic.model if not model else model,
+                temperature=config.model.temperature,
+                max_tokens=config.model.max_tokens,
+                stream=config.agent.stream,
+                api_key=config.anthropic.api_key
+            )
+        except ImportError:
+            display.show_error("Anthropic library not found. Run: pip install anthropic")
+            raise typer.Exit(1)
+    elif provider == "openrouter":
         client = OpenRouterClient(
-            model_name=config.model.name,
+            model_name=config.model.name if not model else model,
             temperature=config.model.temperature,
             max_tokens=config.model.max_tokens,
             stream=config.agent.stream,
             api_key=config.openrouter.api_key
         )
-        if not client.is_available():
-            display.show_error("OpenRouter API Key is missing. Check your tukicode.toml.")
-            raise typer.Exit(1)
-    else:
+    else: # Default to Ollama
         client = OllamaClient(
-            model_name=config.model.name,
+            model_name=config.model.name if not model else model,
             temperature=config.model.temperature,
             max_tokens=config.model.max_tokens,
             stream=config.agent.stream
