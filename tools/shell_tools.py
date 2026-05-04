@@ -92,13 +92,16 @@ def run_shell(command: str, cwd: str = None, timeout_seconds: Union[int, str] = 
 
     if background:
         try:
-            # Usar PtyProcess para emular una terminal REAL
-            # winpty necesita la ruta completa al ejecutable en algunos casos
-            shell_path = r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"
-            full_command = f"{shell_path} -NoProfile -ExecutionPolicy Bypass -Command \"{command}\""
+            # Evitar doble envoltorio si el comando ya parece completo
+            if "powershell" in command.lower() or "cmd.exe" in command.lower() or "&&" in command:
+                # Si tiene && o ya es un shell, lo lanzamos vía cmd para mayor compatibilidad en Windows
+                full_command = f"cmd.exe /c {command}" if "cmd.exe" not in command.lower() else command
+            else:
+                shell_path = r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"
+                full_command = f"{shell_path} -NoProfile -ExecutionPolicy Bypass -Command \"{command}\""
             
-            # Spawnear el proceso en un PTY (Pseudo-Terminal)
-            proc = PtyProcess.spawn(full_command, cwd=cwd, env=env, dimensions=(24, 80))
+            # Spawnear con dimensiones mayores para QRs grandes
+            proc = PtyProcess.spawn(full_command, cwd=cwd, env=env, dimensions=(40, 120))
             pid = proc.pid
             
             _bg_processes[pid] = {
@@ -116,7 +119,7 @@ def run_shell(command: str, cwd: str = None, timeout_seconds: Union[int, str] = 
             
             return ToolResult(
                 success=True, 
-                output=f"Process started in a REAL PTY (PID {pid}). Expo QR codes and interactive elements will be captured.",
+                output=f"Process started in a REAL PTY (PID {pid}, 120x40). Expo QR codes and interactive elements will be captured.",
                 metadata={"pid": pid, "background": True, "pty": True}
             )
         except Exception as e:
