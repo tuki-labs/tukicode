@@ -544,7 +544,11 @@ class TukiApp(App):
             response = await self.agent_loop.run_turn(text)
             self._last_assistant_response = response
         except Exception as e:
-            self.add_message("error", str(e))
+            from ui.display import StopRequestedException
+            if isinstance(e, StopRequestedException):
+                self.add_message("system", "[bold red]Agent stopped.[/bold red]")
+            else:
+                self.add_message("error", str(e))
         finally:
             self._is_running = False
 
@@ -560,6 +564,8 @@ class TukiApp(App):
         if self._is_running:
             self.agent_loop._stop_requested = True
             self.tuki_display.should_stop = True
-            self.add_message("system", "[bold red]Stop requested. Finalizing current step...[/bold red]")
+            # Forzar el flag de ejecución a falso para permitir nueva entrada rápido
+            self._is_running = False 
+            self.add_message("system", "[bold red]Emergency Stop Triggered.[/bold red]")
         else:
             self.add_message("system", "Agent is not running.")

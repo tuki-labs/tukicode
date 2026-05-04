@@ -5,6 +5,10 @@ from typing import Generator, Optional
 import asyncio
 from tools.base import ToolResult
 
+class StopRequestedException(Exception):
+    """Excepción lanzada cuando el usuario solicita detener la ejecución."""
+    pass
+
 class TukiDisplay:
     def __init__(self, on_output=None, on_confirm=None):
         # Mantener firma para compatibilidad, pero usaremos app
@@ -38,9 +42,9 @@ class TukiDisplay:
         
         for chunk in chunk_generator:
             if self.should_stop:
-                self.print("[bold yellow]Generation stopped by user.[/bold yellow]")
                 self.should_stop = False
-                break
+                self.print("[bold red]Generation aborted by user.[/bold red]")
+                raise StopRequestedException("User requested stop")
             full_response += chunk
             
             # Extraer pensamiento en tiempo real si es posible

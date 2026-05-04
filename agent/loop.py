@@ -175,6 +175,13 @@ class AgentLoop:
             elif isinstance(parsed, FinalResponse):
                 self.context.add_message("assistant", parsed.text)
                 return parsed.text
+        
+        except Exception as e:
+            from ui.display import StopRequestedException
+            if isinstance(e, StopRequestedException):
+                self._stop_requested = False
+                return "Execution stopped by user."
+            raise e
                 
         return "ReAct loop iteration limit reached."
 
