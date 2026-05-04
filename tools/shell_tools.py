@@ -11,15 +11,15 @@ from .registry import registry
 _bg_processes: Dict[int, Dict] = {}
 
 def _read_stream(stream, pid, key):
-    """Lee el stream por bloques para capturar salida sin saltos de línea (como QRs o barras de progreso)."""
+    """Lee el stream carácter por carácter para respuesta inmediata y evitar bloqueos de búfer."""
     try:
         while True:
-            # Leer en bloques pequeños para respuesta inmediata
-            chunk = stream.read(1024)
-            if not chunk:
+            # Leer caracter por caracter para capturar todo al instante (útil para QRs)
+            char = stream.read(1)
+            if not char:
                 break
             if pid in _bg_processes:
-                _bg_processes[pid][key] += chunk
+                _bg_processes[pid][key] += char
             else:
                 break
     except:
@@ -74,7 +74,7 @@ def run_shell(command: str, cwd: str = None, timeout_seconds: Union[int, str] = 
     env["FORCE_COLOR"] = "1"
     env["TERM"] = "xterm-256color"
     env["COLORTERM"] = "truecolor"
-    env["CI"] = "false" # Engañar a herramientas que detectan entornos de CI y desactivan interactividad
+    env["CI"] = "false" 
     env["PYTHONUNBUFFERED"] = "1"
 
     if background:
@@ -85,12 +85,11 @@ def run_shell(command: str, cwd: str = None, timeout_seconds: Union[int, str] = 
                 cwd=cwd,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
-                stdin=subprocess.PIPE, # A veces ayuda a que el proceso crea que es interactivo
                 text=True,
                 encoding="utf-8",
                 errors="replace",
                 env=env,
-                bufsize=0, # Unbuffered reading
+                bufsize=1, # Line buffered for stability with text=True
                 creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if os.name == 'nt' else 0
             )
             pid = proc.pid
