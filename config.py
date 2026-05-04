@@ -15,6 +15,7 @@ def get_app_dir() -> Path:
 @dataclass
 class ModelConfig:
     name: str = "deepseek-coder:1.3b"
+    provider: str = "ollama"
     temperature: float = 0.2
     max_tokens: int = 4096
     context_window: int = 32768
@@ -50,6 +51,22 @@ class OpenClawConfig:
 class OpenRouterConfig:
     enabled: bool = False
     api_key: str = ""
+    models: List[str] = field(default_factory=lambda: ["openai/gpt-4o", "anthropic/claude-3.5-sonnet"])
+    model: str = "claude-3-5-sonnet-20240620"
+
+@dataclass
+class GeminiConfig:
+    enabled: bool = False
+    api_key: str = ""
+    model: str = "gemini-1.5-pro"
+    models: List[str] = field(default_factory=lambda: ["gemini-1.5-pro", "gemini-1.5-flash"])
+
+@dataclass
+class AnthropicConfig:
+    enabled: bool = False
+    api_key: str = ""
+    model: str = "claude-3-5-sonnet-20240620"
+    models: List[str] = field(default_factory=lambda: ["claude-3-5-sonnet-20240620", "claude-3-opus-20240229"])
 
 # Config for Integrations
 @dataclass
@@ -65,6 +82,8 @@ class Config:
     history: HistoryConfig = field(default_factory=HistoryConfig)
     integrations: IntegrationsConfig = field(default_factory=IntegrationsConfig)
     openrouter: OpenRouterConfig = field(default_factory=OpenRouterConfig)
+    gemini: GeminiConfig = field(default_factory=GeminiConfig)
+    anthropic: AnthropicConfig = field(default_factory=AnthropicConfig)
 
     def save(self):
         save_config(self)
@@ -139,6 +158,7 @@ def save_config(config: Config):
     
     toml_str = f'''[model]
 name = "{config.model.name}"
+provider = "{config.model.provider}"
 temperature = {config.model.temperature}
 max_tokens = {config.model.max_tokens}
 context_window = {config.model.context_window}
@@ -162,9 +182,22 @@ max_conversations = {config.history.max_conversations}
 [integrations.openclaw]
 enabled = {"true" if config.integrations.openclaw.enabled else "false"}
 
+[gemini]
+enabled = {str(config.gemini.enabled).lower()}
+model = "{config.gemini.model}"
+api_key = "{config.gemini.api_key}"
+models = {str(config.gemini.models).replace("'", '"')}
+
+[anthropic]
+enabled = {str(config.anthropic.enabled).lower()}
+model = "{config.anthropic.model}"
+api_key = "{config.anthropic.api_key}"
+models = {str(config.anthropic.models).replace("'", '"')}
+
 [openrouter]
-enabled = {"true" if config.openrouter.enabled else "false"}
+enabled = {str(config.openrouter.enabled).lower()}
 api_key = "{config.openrouter.api_key}"
+models = {str(config.openrouter.models).replace("'", '"')}
 '''
     with open(config_path, "w", encoding="utf-8") as f:
         f.write(toml_str)

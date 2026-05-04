@@ -5,3 +5,6 @@ prompt-toolkit
 pytest
 pytest-asyncio
 pyperclip
+google-generativeai
+anthropic
+textual
