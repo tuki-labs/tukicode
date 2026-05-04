@@ -93,6 +93,7 @@ class TukiApp(App):
         Binding("ctrl+c", "quit", "Exit"),
         Binding("/", "focus_input", "Focus Input"),
         Binding("ctrl+l", "clear_chat", "Clear Chat"),
+        Binding("ctrl+s", "stop_agent", "Stop Agent"),
     ]
 
     def __init__(self, config, client, registry, context, session_id=None):
@@ -553,3 +554,12 @@ class TukiApp(App):
     def action_clear_chat(self) -> None:
         self.query_one("#chat-log").clear()
         self.add_message("system", "Chat history cleared.")
+
+    def action_stop_agent(self) -> None:
+        """Detiene la ejecución del agente de forma inmediata."""
+        if self._is_running:
+            self.agent_loop._stop_requested = True
+            self.tuki_display.should_stop = True
+            self.add_message("system", "[bold red]Stop requested. Finalizing current step...[/bold red]")
+        else:
+            self.add_message("system", "Agent is not running.")

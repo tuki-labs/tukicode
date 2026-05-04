@@ -13,6 +13,7 @@ class AgentLoop:
         self.tool_registry = tool_registry
         self.context = context
         self.display = display
+        self._stop_requested = False
 
     def start_session(self):
         from .prompts import build_system_prompt
@@ -45,6 +46,10 @@ class AgentLoop:
         self._turn_confirmed = False # Reset confirmation for each turn
         
         for _ in range(20): # max 20 iterations
+            if self._stop_requested:
+                self._stop_requested = False
+                return "Agent execution stopped by user."
+            
             self.context.compress_if_needed(self.llm_client)
             
             messages = self.context.get_messages()
@@ -142,7 +147,7 @@ class AgentLoop:
                         
                         if not confirmed:
                             self.context.add_message("tool", "Action cancelled by user.", tool_call_id=parsed.call_id)
-                            continue
+                            return "Action cancelled by user. What would you like to do next?"
                         
                         self._turn_confirmed = True # Marcar que el usuario ya autorizó algo en este turno
                 
