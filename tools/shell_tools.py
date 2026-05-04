@@ -77,19 +77,12 @@ def is_blocked(command: str) -> bool:
             return True
     return False
 
-def strip_ansi(text: str) -> str:
-    """Elimina códigos de escape ANSI pero mantiene caracteres de bloque (QR)."""
-    import re
-    # Este regex elimina secuencias de control pero respeta caracteres UTF-8 extendidos
-    ansi_escape = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
-    return ansi_escape.sub('', text)
-
 def truncate_output(text: str, max_lines: int = 500) -> str:
     if not text:
         return ""
     
-    # Limpiar ruido técnico manteniendo el formato
-    text = strip_ansi(text)
+    # NO eliminamos códigos ANSI aquí, porque los QRs dependen de los colores de fondo.
+    # El renderizador de la UI (Rich) se encargará de procesarlos.
     
     lines = text.splitlines()
     if len(lines) <= max_lines:
