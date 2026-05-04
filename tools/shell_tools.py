@@ -2,12 +2,29 @@ import subprocess
 import time
 import os
 import signal
+import threading
 from typing import Union, Dict
 from .base import tool, ToolResult, RiskLevel
 from .registry import registry
 
 # Global dict to store background processes
 _bg_processes: Dict[int, Dict] = {}
+
+def _read_stream(stream, pid, key):
+    """Lee un stream y lo guarda en el buffer del proceso."""
+    try:
+        for line in iter(stream.readline, ''):
+            if pid in _bg_processes:
+                _bg_processes[pid][key] += line
+            else:
+                break
+    except:
+        pass
+    finally:
+        try:
+            stream.close()
+        except:
+            pass
 
 BLOCKLIST = [
     "format", "diskpart", "del /s /q c:\\", "rd /s /q c:\\",
@@ -33,7 +50,7 @@ def truncate_output(text: str, max_lines: int = 100) -> str:
     last_part = lines[-50:]
     return "\n".join(first_part) + f"\n\n... [Truncated {len(lines) - 70} lines for performance] ...\n\n" + "\n".join(last_part)
 
-@tool("run_shell", "Executes a command. Set background=True for servers or long tasks (npm start, etc).", RiskLevel.HIGH)
+@tool("run_shell", "Executes a command. Set background=True for servers (npm start, expo start).", RiskLevel.HIGH)
 def run_shell(command: str, cwd: str = None, timeout_seconds: Union[int, str] = 30, background: bool = False) -> ToolResult:
     # Asegurar tipos correctos
     try:
@@ -41,7 +58,7 @@ def run_shell(command: str, cwd: str = None, timeout_seconds: Union[int, str] = 
     except:
         timeout_seconds = 30
     
-    # Convertir background a bool si llega como string (a veces los LLMs lo hacen)
+    # Convertir background a bool si llega como string
     if isinstance(background, str):
         background = background.lower() == "true"
 
@@ -50,7 +67,7 @@ def run_shell(command: str, cwd: str = None, timeout_seconds: Union[int, str] = 
     
     if background:
         try:
-            # En Windows usamos Popen con creación de grupo de procesos para poder matarlos después
+            # En Windows usamos Popen con creación de grupo de procesos
             proc = subprocess.Popen(
                 ["powershell", "-Command", command],
                 cwd=cwd,
@@ -59,6 +76,7 @@ def run_shell(command: str, cwd: str = None, timeout_seconds: Union[int, str] = 
                 text=True,
                 encoding="utf-8",
                 errors="replace",
+                bufsize=1, # Line buffered
                 creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if os.name == 'nt' else 0
             )
             pid = proc.pid
@@ -66,11 +84,18 @@ def run_shell(command: str, cwd: str = None, timeout_seconds: Union[int, str] = 
                 "process": proc,
                 "command": command,
                 "start_time": time.time(),
-                "cwd": cwd or os.getcwd()
+                "cwd": cwd or os.getcwd(),
+                "stdout": "",
+                "stderr": ""
             }
+            
+            # Lanzar hilos para capturar salida sin bloquear
+            threading.Thread(target=_read_stream, args=(proc.stdout, pid, "stdout"), daemon=True).start()
+            threading.Thread(target=_read_stream, args=(proc.stderr, pid, "stderr"), daemon=True).start()
+            
             return ToolResult(
                 success=True, 
-                output=f"Process started in background with PID {pid}.\nCommand: {command}",
+                output=f"Process started in background (PID {pid}). Use get_process_output to see the logs/QR code.",
                 metadata={"pid": pid, "background": True}
             )
         except Exception as e:
@@ -106,6 +131,33 @@ def run_shell(command: str, cwd: str = None, timeout_seconds: Union[int, str] = 
         return ToolResult(success=False, output="", error=f"Command timed out after {timeout_seconds}s. Consider using background=True for long tasks.")
     except Exception as e:
         return ToolResult(success=False, output="", error=f"Error executing command: {str(e)}")
+
+@tool("get_process_output", "Reads the current stdout and stderr of a background process. Useful for seeing QR codes or logs.", RiskLevel.MEDIUM)
+def get_process_output(pid: Union[int, str]) -> ToolResult:
+    try:
+        pid = int(pid)
+    except:
+        return ToolResult(success=False, output="", error="Invalid PID format.")
+
+    if pid not in _bg_processes:
+        return ToolResult(success=False, output="", error=f"No background process found with PID {pid}.")
+    
+    info = _bg_processes[pid]
+    stdout = info["stdout"]
+    stderr = info["stderr"]
+    
+    # Truncar para no saturar si es mucho
+    output = truncate_output(stdout, max_lines=200)
+    if stderr:
+        output += "\n--- STDERR ---\n" + truncate_output(stderr, max_lines=50)
+        
+    status = "Running" if info["process"].poll() is None else f"Finished (Code: {info['process'].poll()})"
+    
+    return ToolResult(
+        success=True, 
+        output=output, 
+        metadata={"pid": pid, "status": status, "command": info["command"]}
+    )
 
 @tool("list_processes", "Lists all background processes started by TukiCode", RiskLevel.MEDIUM)
 def list_processes() -> ToolResult:
@@ -165,5 +217,6 @@ def stop_process(pid: Union[int, str]) -> ToolResult:
         return ToolResult(success=False, output="", error=f"Error stopping process: {str(e)}")
 
 registry.register(run_shell)
+registry.register(get_process_output)
 registry.register(list_processes)
 registry.register(stop_process)
