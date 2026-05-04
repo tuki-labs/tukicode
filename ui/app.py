@@ -156,8 +156,8 @@ class TukiApp(App):
                 yield RichLog(id="chat-log", wrap=True, highlight=True, markup=True)
                 yield Static("", id="active-response")
             with Vertical(id="console-area"):
-                yield Static("[bold magenta] 🖥️  LIVE CONSOLE[/bold magenta]", classes="console-header")
-                yield RichLog(id="console-log", wrap=False, highlight=True, markup=False)
+                yield Static("[bold cyan]LIVE CONSOLE[/bold cyan]", classes="console-header")
+                yield RichLog(id="console-log", wrap=False, highlight=False, markup=False)
         yield Static("", id="thinking-panel")
         yield Input(placeholder="Ask anything...", id="input-bar")
         yield Static("Initializing...", id="status-bar")
@@ -203,8 +203,7 @@ class TukiApp(App):
             return
         
         if self._is_running and not self._confirm_future:
-            # No limpiar el input para que el usuario no pierda lo que escribió
-            self.add_message("error", "Agent is busy. Please wait for the current turn to finish.")
+            # Silenciosamente ignorar - el input ya está deshabilitado visualmente
             return
             
         event.input.value = ""
@@ -222,6 +221,7 @@ class TukiApp(App):
 
         self.add_message("user", text)
         self._is_running = True
+        self._set_input_locked(True)
         asyncio.create_task(self.run_agent(text))
 
     async def confirm_prompt(self, message: str) -> bool:
@@ -587,6 +587,22 @@ class TukiApp(App):
                 self.add_message("error", str(e))
         finally:
             self._is_running = False
+            self._set_input_locked(False)
+
+    def _set_input_locked(self, locked: bool):
+        """Bloquea/desbloquea el input bar visualmente para que el usuario sepa que el agente está ocupado."""
+        try:
+            input_bar = self.query_one("#input-bar")
+            if locked:
+                input_bar.placeholder = "⏳ Tuki is working... (Ctrl+S to stop)"
+                input_bar.styles.border = ("solid", "#555")
+                input_bar.styles.color = "#666"
+            else:
+                input_bar.placeholder = "Ask anything..."
+                input_bar.styles.border = ("solid", "#444")
+                input_bar.styles.color = "#ffffff"
+        except Exception:
+            pass
 
     def action_focus_input(self) -> None:
         self.query_one("#input-bar").focus()
@@ -612,7 +628,5 @@ class TukiApp(App):
         console.has_class("hidden")
         if console.has_class("hidden"):
             console.remove_class("hidden")
-            self.add_message("system", "Console visible.")
         else:
             console.add_class("hidden")
-            self.add_message("system", "Console hidden.")
