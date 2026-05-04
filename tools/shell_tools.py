@@ -37,35 +37,94 @@ def _read_stream(stream, pid, key):
             pass
 
 def _read_pty(proc, pid, key):
-    """Lee la salida de un PTY real y guarda un log de depuración."""
+    """Lee PTY usando pyte como emulador VT100. Maneja cursor movements y renderiza QR correctamente."""
+    try:
+        import pyte
+    except ImportError:
+        # Fallback sin pyte
+        _read_pty_raw(proc, pid, key)
+        return
+
+    COLS, ROWS = 120, 40
+    screen = pyte.Screen(COLS, ROWS)
+    stream_parser = pyte.ByteStream(screen)
+
     debug_file = "pty_debug.log"
     with open(debug_file, "a", encoding="utf-8") as f:
-        f.write(f"\n--- Starting PTY Read for PID {pid} ---\n")
-    
+        f.write(f"\n--- Starting PTY Read (pyte) for PID {pid} ---\n")
+
+    last_snapshot = ""
+
     try:
         while True:
-            # Leer bloque del PTY
+            try:
+                chunk = proc.read(4096)
+            except EOFError:
+                break
+
+            if not chunk:
+                if not proc.isalive():
+                    break
+                time.sleep(0.05)
+                continue
+
+            # Guardar raw en buffer del proceso (para get_process_output)
+            if pid in _bg_processes:
+                _bg_processes[pid][key] += chunk
+            else:
+                break
+
+            # Alimentar pyte con los bytes del PTY
+            if isinstance(chunk, str):
+                stream_parser.feed(chunk.encode("utf-8", errors="replace"))
+            else:
+                stream_parser.feed(chunk)
+
+            # Renderizar el snapshot actual de la pantalla virtual
+            snapshot_lines = []
+            for line_idx in range(ROWS):
+                line = screen.buffer[line_idx]
+                row_text = ""
+                for col_idx in range(COLS):
+                    char = line[col_idx]
+                    row_text += char.data if char.data else " "
+                snapshot_lines.append(row_text.rstrip())
+
+            # Quitar líneas vacías del final
+            while snapshot_lines and not snapshot_lines[-1].strip():
+                snapshot_lines.pop()
+
+            snapshot = "\n".join(snapshot_lines)
+
+            # Solo actualizar la UI si la pantalla cambió
+            if snapshot != last_snapshot and snapshot.strip():
+                last_snapshot = snapshot
+                if _display:
+                    _display.set_console_screen(snapshot)
+
+    except Exception as e:
+        with open(debug_file, "a", encoding="utf-8") as f:
+            f.write(f"\n--- PTY ERROR: {str(e)} ---\n")
+
+
+def _read_pty_raw(proc, pid, key):
+    """Fallback sin pyte: lee crudo."""
+    debug_file = "pty_debug.log"
+    try:
+        while True:
             try:
                 chunk = proc.read(1024)
             except EOFError:
-                with open(debug_file, "a", encoding="utf-8") as f:
-                    f.write(f"--- PTY PID {pid} EOF ---\n")
                 break
-                
             if not chunk:
-                # Si el proceso sigue vivo, esperamos un poco
                 if not proc.isalive():
                     break
                 time.sleep(0.1)
                 continue
-            
-            # Log de depuración crudo
             with open(debug_file, "a", encoding="utf-8") as f:
                 f.write(chunk)
-                
             if pid in _bg_processes:
                 _bg_processes[pid][key] += chunk
-                # Live broadcast a la consola derecha si hay display
                 if _display:
                     _display.update_console(chunk)
             else:
@@ -73,6 +132,7 @@ def _read_pty(proc, pid, key):
     except Exception as e:
         with open(debug_file, "a", encoding="utf-8") as f:
             f.write(f"\n--- PTY ERROR: {str(e)} ---\n")
+
 
 BLOCKLIST = [
     "format", "diskpart", "del /s /q c:\\", "rd /s /q c:\\",
@@ -86,19 +146,26 @@ def is_blocked(command: str) -> bool:
             return True
     return False
 
+def strip_ansi(text: str) -> str:
+    """Elimina códigos de escape ANSI para que la IA lea texto limpio."""
+    import re
+    ansi_escape = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
+    return ansi_escape.sub('', text)
+
 def truncate_output(text: str, max_lines: int = 500) -> str:
     if not text:
         return ""
     
-    # NO eliminamos códigos ANSI aquí, porque los QRs dependen de los colores de fondo.
-    # El renderizador de la UI (Rich) se encargará de procesarlos.
+    # IMPORTANTE: Para la IA (ToolResult), siempre limpiamos el texto ANSI.
+    # El Live Console seguirá recibiendo el texto crudo con colores.
+    text = strip_ansi(text)
     
     lines = text.splitlines()
     if len(lines) <= max_lines:
         return text
     
-    # Si es muy largo, mostramos el final (donde suelen estar los errores o el QR más reciente)
-    return f"... [Truncated first {len(lines) - max_lines} lines] ...\n" + "\n".join(lines[-max_lines:])
+    # Si es muy largo, mostramos el final
+    return f"... [Truncated first {len(lines) - max_lines} lines for the agent] ...\n" + "\n".join(lines[-max_lines:])
 
 @tool("run_shell", "Executes a command. Use background=True for servers (expo, npm start) to get a real TTY.", RiskLevel.HIGH)
 def run_shell(command: str, cwd: str = None, timeout_seconds: Union[int, str] = 30, background: bool = False) -> ToolResult:
@@ -113,7 +180,6 @@ def run_shell(command: str, cwd: str = None, timeout_seconds: Union[int, str] = 
     if is_blocked(command):
         return ToolResult(success=False, output="", error=f"The command contains security-blocked patterns.")
     
-    # Configuración de entorno interactivo
     env = os.environ.copy()
     env["FORCE_COLOR"] = "1"
     env["TERM"] = "xterm-256color"
@@ -123,22 +189,18 @@ def run_shell(command: str, cwd: str = None, timeout_seconds: Union[int, str] = 
 
     if background:
         try:
-            # MODO TERMINAL REAL: Spawnear un shell persistente y enviarle los comandos
-            shell_path = r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"
+            shell_path = r"C:\Windows\System32\cmd.exe"
             
-            # Spawnear el shell directamente (sin -Command para que no se cierre)
             proc = PtyProcess.spawn(shell_path, cwd=cwd, env=env, dimensions=(40, 120))
             pid = proc.pid
             
-            # "Teclear" los comandos en la terminal
-            # Usamos \r\n para simular el Enter de Windows
             if cwd:
-                proc.write(f"Set-Location -Path '{cwd}'\r\n")
+                proc.write(f"cd /d \"{cwd}\"\r\n")
             
-            # Limpiar la pantalla inicial para que el log empiece limpio
-            proc.write("Clear-Host\r\n")
+            # Limpiar pantalla inicial
+            proc.write("cls\r\n")
             
-            # Ejecutar el comando del usuario
+            # Ejecutar el comando
             proc.write(f"{command}\r\n")
             
             _bg_processes[pid] = {
@@ -151,7 +213,6 @@ def run_shell(command: str, cwd: str = None, timeout_seconds: Union[int, str] = 
                 "is_pty": True
             }
             
-            # Hilo para leer la salida del PTY
             threading.Thread(target=_read_pty, args=(proc, pid, "stdout"), daemon=True).start()
             
             return ToolResult(
@@ -166,7 +227,7 @@ def run_shell(command: str, cwd: str = None, timeout_seconds: Union[int, str] = 
     start_time = time.time()
     try:
         proc = subprocess.run(
-            ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", command],
+            ["cmd", "/c", command],
             cwd=cwd,
             capture_output=True,
             text=True,
@@ -189,7 +250,6 @@ def run_shell(command: str, cwd: str = None, timeout_seconds: Union[int, str] = 
         return ToolResult(success=False, output="", error=f"Timeout. Use background=True for interactive servers.")
     except Exception as e:
         return ToolResult(success=False, output="", error=f"Error: {str(e)}")
-
 @tool("get_process_output", "Reads output from a background process. Supports real TTY output (QRs, colors).", RiskLevel.MEDIUM)
 def get_process_output(pid: Union[int, str]) -> ToolResult:
     try:
