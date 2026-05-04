@@ -77,9 +77,19 @@ def is_blocked(command: str) -> bool:
             return True
     return False
 
+def strip_ansi(text: str) -> str:
+    """Elimina códigos de escape ANSI básicos para que el chat sea legible."""
+    import re
+    ansi_escape = re.compile(r'(?:\x1B[@-_]|[\x80-\x9F])[0-?]*[ -/]*[@-~]')
+    return ansi_escape.sub('', text)
+
 def truncate_output(text: str, max_lines: int = 100) -> str:
     if not text:
         return ""
+    
+    # Limpiar un poco el ruido de la terminal para el chat
+    text = strip_ansi(text)
+    
     lines = text.splitlines()
     if len(lines) <= max_lines:
         return text
