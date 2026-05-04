@@ -78,25 +78,25 @@ def is_blocked(command: str) -> bool:
     return False
 
 def strip_ansi(text: str) -> str:
-    """Elimina códigos de escape ANSI básicos para que el chat sea legible."""
+    """Elimina códigos de escape ANSI pero mantiene caracteres de bloque (QR)."""
     import re
-    ansi_escape = re.compile(r'(?:\x1B[@-_]|[\x80-\x9F])[0-?]*[ -/]*[@-~]')
+    # Este regex elimina secuencias de control pero respeta caracteres UTF-8 extendidos
+    ansi_escape = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
     return ansi_escape.sub('', text)
 
-def truncate_output(text: str, max_lines: int = 100) -> str:
+def truncate_output(text: str, max_lines: int = 500) -> str:
     if not text:
         return ""
     
-    # Limpiar un poco el ruido de la terminal para el chat
+    # Limpiar ruido técnico manteniendo el formato
     text = strip_ansi(text)
     
     lines = text.splitlines()
     if len(lines) <= max_lines:
         return text
     
-    first_part = lines[:20]
-    last_part = lines[-50:]
-    return "\n".join(first_part) + f"\n\n... [Truncated {len(lines) - 70} lines for performance] ...\n\n" + "\n".join(last_part)
+    # Si es muy largo, mostramos el final (donde suelen estar los errores o el QR más reciente)
+    return f"... [Truncated first {len(lines) - max_lines} lines] ...\n" + "\n".join(lines[-max_lines:])
 
 @tool("run_shell", "Executes a command. Use background=True for servers (expo, npm start) to get a real TTY.", RiskLevel.HIGH)
 def run_shell(command: str, cwd: str = None, timeout_seconds: Union[int, str] = 30, background: bool = False) -> ToolResult:
@@ -202,7 +202,7 @@ def get_process_output(pid: Union[int, str]) -> ToolResult:
     stdout = info["stdout"]
     
     # Truncado inteligente
-    output = truncate_output(stdout, max_lines=300)
+    output = truncate_output(stdout, max_lines=500)
     
     status = "Running"
     if info.get("is_pty"):
