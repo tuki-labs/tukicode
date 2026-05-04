@@ -99,7 +99,7 @@ def delete_directory(path: str) -> ToolResult:
     except Exception as e:
         return ToolResult(success=False, output="", error=f"Error deleting directory: {str(e)}")
 
-@tool("get_project_tree", "Returns the folder tree", RiskLevel.MEDIUM)
+@tool("get_project_tree", "Returns the folder tree. Automatically ignores heavy folders like node_modules.", RiskLevel.MEDIUM)
 def get_project_tree(path: str, max_depth: int = 4, ignore: list = None) -> ToolResult:
     # Asegurar tipos
     try:
@@ -110,7 +110,16 @@ def get_project_tree(path: str, max_depth: int = 4, ignore: list = None) -> Tool
     if not p.exists() or not p.is_dir():
         return ToolResult(success=False, output="", error=f"Directory '{path}' not found.")
     
+    # Default ignore list for performance
+    default_ignore = {
+        "node_modules", ".git", "__pycache__", "venv", ".venv", 
+        "dist", "build", "target", ".expo", ".next", "out",
+        "android", "ios", "Pods"
+    }
+    
     ignore_set = set(ignore) if ignore else set()
+    ignore_set.update(default_ignore)
+    
     tree_lines = []
 
     def walk(directory, prefix="", depth=0):
@@ -120,6 +129,11 @@ def get_project_tree(path: str, max_depth: int = 4, ignore: list = None) -> Tool
             items = sorted(directory.iterdir(), key=lambda x: (not x.is_dir(), x.name.lower()))
             items = [item for item in items if item.name not in ignore_set]
             
+            # Si hay demasiados items, avisar
+            if len(items) > 100:
+                tree_lines.append(f"{prefix}└── [Too many items ({len(items)}), consider a more specific path]")
+                return
+
             for index, item in enumerate(items):
                 is_last = (index == len(items) - 1)
                 connector = "└── " if is_last else "├── "
@@ -129,6 +143,8 @@ def get_project_tree(path: str, max_depth: int = 4, ignore: list = None) -> Tool
                     walk(item, prefix + extension, depth + 1)
         except PermissionError:
             tree_lines.append(f"{prefix}└── [Access denied]")
+        except Exception as e:
+            tree_lines.append(f"{prefix}└── [Error: {str(e)}]")
     
     tree_lines.append(p.name + "/")
     walk(p)
