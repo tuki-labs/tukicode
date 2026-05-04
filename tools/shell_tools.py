@@ -31,20 +31,39 @@ def _read_stream(stream, pid, key):
             pass
 
 def _read_pty(proc, pid, key):
-    """Lee la salida de un PTY real (winpty)."""
+    """Lee la salida de un PTY real y guarda un log de depuración."""
+    debug_file = "pty_debug.log"
+    with open(debug_file, "a", encoding="utf-8") as f:
+        f.write(f"\n--- Starting PTY Read for PID {pid} ---\n")
+    
     try:
         while True:
-            # Leer bloques del PTY (Pseudo-Terminal)
-            chunk = proc.read(4096)
-            if not chunk:
+            # Leer bloque del PTY
+            try:
+                chunk = proc.read(1024)
+            except EOFError:
+                with open(debug_file, "a", encoding="utf-8") as f:
+                    f.write(f"--- PTY PID {pid} EOF ---\n")
                 break
+                
+            if not chunk:
+                # Si el proceso sigue vivo, esperamos un poco
+                if not proc.isalive():
+                    break
+                time.sleep(0.1)
+                continue
+            
+            # Log de depuración crudo
+            with open(debug_file, "a", encoding="utf-8") as f:
+                f.write(chunk)
+                
             if pid in _bg_processes:
-                # El PTY devuelve la salida con códigos ANSI y formato real
                 _bg_processes[pid][key] += chunk
             else:
                 break
-    except (EOFError, Exception):
-        pass
+    except Exception as e:
+        with open(debug_file, "a", encoding="utf-8") as f:
+            f.write(f"\n--- PTY ERROR: {str(e)} ---\n")
 
 BLOCKLIST = [
     "format", "diskpart", "del /s /q c:\\", "rd /s /q c:\\",
