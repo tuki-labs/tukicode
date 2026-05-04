@@ -30,7 +30,29 @@ def _read_stream(stream, pid, key):
         except:
             pass
 
-# ... (is_blocked and truncate_output remain the same)
+BLOCKLIST = [
+    "format", "diskpart", "del /s /q c:\\", "rd /s /q c:\\",
+    "remove-item -recurse c:\\", "rmdir /s", "rm -rf /", ":(){ :|:& };:"
+]
+
+def is_blocked(command: str) -> bool:
+    cmd_lower = command.lower()
+    for blocked in BLOCKLIST:
+        if blocked in cmd_lower:
+            return True
+    return False
+
+def truncate_output(text: str, max_lines: int = 100) -> str:
+    if not text:
+        return ""
+    lines = text.splitlines()
+    if len(lines) <= max_lines:
+        return text
+    
+    # Send first 20 and last 50 lines
+    first_part = lines[:20]
+    last_part = lines[-50:]
+    return "\n".join(first_part) + f"\n\n... [Truncated {len(lines) - 70} lines for performance] ...\n\n" + "\n".join(last_part)
 
 @tool("run_shell", "Executes a command. Set background=True for servers (npm start, expo start).", RiskLevel.HIGH)
 def run_shell(command: str, cwd: str = None, timeout_seconds: Union[int, str] = 30, background: bool = False) -> ToolResult:
