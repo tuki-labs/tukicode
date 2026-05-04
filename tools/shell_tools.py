@@ -3,13 +3,19 @@ import signal
 import threading
 import time
 from typing import Union, Dict
+from typing import Union, Dict, Any
 from winpty import PtyProcess
 import subprocess
 from .base import tool, ToolResult, RiskLevel
 from .registry import registry
 
 # Global dict to store background processes (PTYs)
-_bg_processes: Dict[int, Dict] = {}
+_bg_processes: Dict[int, Dict[str, Any]] = {}
+_display = None
+
+def set_display(display):
+    global _display
+    _display = display
 
 def _read_stream(stream, pid, key):
     """Lee el stream carácter por carácter para respuesta inmediata (usado en subprocess)."""
@@ -59,6 +65,9 @@ def _read_pty(proc, pid, key):
                 
             if pid in _bg_processes:
                 _bg_processes[pid][key] += chunk
+                # Live broadcast a la consola derecha si hay display
+                if _display:
+                    _display.update_console(chunk)
             else:
                 break
     except Exception as e:

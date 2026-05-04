@@ -42,6 +42,23 @@ class TukiApp(App):
         background: #0d0d0d;
         margin: 1 1 0 0;
     }
+    #console-area {
+        width: 60;
+        height: 1fr;
+        border: solid #333;
+        background: #080808;
+        margin: 1 1 0 0;
+        display: block;
+    }
+    #console-area.hidden {
+        display: none;
+    }
+    #console-log {
+        border: none;
+        height: 1fr;
+        scrollbar-size: 1 1;
+        background: transparent;
+    }
     #active-response {
         display: none;
         padding: 0 2 1 2;
@@ -81,6 +98,14 @@ class TukiApp(App):
         margin: 0 1 1 1;
         color: #ffffff;
     }
+    .console-header {
+        background: #1a1a2a;
+        color: #ff00ff;
+        padding: 0 1;
+        border-bottom: solid #333;
+        text-align: center;
+        height: 1;
+    }
     #status-bar {
         height: 1;
         background: #1a1a1a;
@@ -94,6 +119,7 @@ class TukiApp(App):
         Binding("/", "focus_input", "Focus Input"),
         Binding("ctrl+l", "clear_chat", "Clear Chat"),
         Binding("ctrl+s", "stop_agent", "Stop Agent"),
+        Binding("ctrl+b", "toggle_console", "Toggle Console"),
     ]
 
     def __init__(self, config, client, registry, context, session_id=None):
@@ -104,9 +130,16 @@ class TukiApp(App):
         self.context = context
         self.session_id = session_id
         from agent.loop import AgentLoop
+        
+        # Conectar Display con App
         from ui.display import TukiDisplay
         self.tuki_display = TukiDisplay()
         self.tuki_display.set_app(self)
+        
+        # Conectar herramientas con Display para la consola en vivo
+        from tools.shell_tools import set_display
+        set_display(self.tuki_display)
+        
         self.agent_loop = AgentLoop(config, client, registry, context, self.tuki_display)
         self.anim = TukiAnimation(start_thread=False)
         self.session_title = None
@@ -122,6 +155,9 @@ class TukiApp(App):
             with Vertical(id="chat-area"):
                 yield RichLog(id="chat-log", wrap=True, highlight=True, markup=True)
                 yield Static("", id="active-response")
+            with Vertical(id="console-area"):
+                yield Static("[bold magenta] 🖥️  LIVE CONSOLE[/bold magenta]", classes="console-header")
+                yield RichLog(id="console-log", wrap=False, highlight=True, markup=False)
         yield Static("", id="thinking-panel")
         yield Input(placeholder="Ask anything...", id="input-bar")
         yield Static("Initializing...", id="status-bar")
@@ -569,3 +605,14 @@ class TukiApp(App):
             self.add_message("system", "[bold red]Emergency Stop Triggered.[/bold red]")
         else:
             self.add_message("system", "Agent is not running.")
+
+    def action_toggle_console(self) -> None:
+        """Muestra u oculta el panel de la consola."""
+        console = self.query_one("#console-area")
+        console.has_class("hidden")
+        if console.has_class("hidden"):
+            console.remove_class("hidden")
+            self.add_message("system", "Console visible.")
+        else:
+            console.add_class("hidden")
+            self.add_message("system", "Console hidden.")

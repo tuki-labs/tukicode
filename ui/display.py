@@ -147,6 +147,19 @@ class TukiDisplay:
             
         self.console.print(table)
 
-    def show_banner(self, version: str, model: str, risk_level: str):
-        # El banner ahora es parte del layout de Textual
-        pass
+    def update_console(self, text: str):
+        """Escribe texto crudo de la terminal en el panel de consola."""
+        if self.app:
+            from rich.text import Text
+            try:
+                # Usar Text.from_ansi para preservar los colores del QR
+                renderable = Text.from_ansi(text)
+                def _write():
+                    try:
+                        log = self.app.query_one("#console-log")
+                        log.write(renderable)
+                    except:
+                        pass
+                self.app.call_later(_write)
+            except:
+                pass
