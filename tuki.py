@@ -122,38 +122,146 @@ def chat(session_id: int = typer.Argument(None, help="ID of a previous session t
         print(f"\nConversation saved. Total session tokens: {context.token_count}")
 
 
-@app.command("config", help="Shows or modifies the system configuration. Use --setup to enter interactive mode.")
-def show_config(setup: ConfigComponent = typer.Option(None, "--setup", help="Setup a specific component interactively.")):
-    from config import save_config
+@app.command("config", help="Shows or modifies the system configuration. Use --setup to open an interactive wizard.")
+def show_config(setup: bool = typer.Option(False, "--setup", "-s", help="Open interactive setup wizard.")):
+    from rich.console import Console
+    from rich.table import Table
+    from rich.panel import Panel
+    from rich import box
+
     config = load_config()
-    display = TukiDisplay()
+    console = Console()
 
-    if setup == ConfigComponent.OLLAMA:
-        display.console.print("\n[bold cyan]─── Ollama Configuration (Local) ───[/bold cyan]")
-        config.openrouter.enabled = False
-        config.model.name = typer.prompt("Ollama model name", default=config.model.name)
-        config.model.temperature = float(typer.prompt("Temperature", default=str(config.model.temperature)))
-        config.model.max_tokens = int(typer.prompt("Max tokens", default=str(config.model.max_tokens)))
-        config.model.context_window = int(typer.prompt("Context window", default=str(config.model.context_window)))
+    if setup:
+        # ── Universal Interactive Wizard ──────────────────────────────
+        console.print("\n[bold cyan]┌─ TukiCode Setup Wizard ─────────────────────────┐[/bold cyan]")
+        console.print("[bold cyan]│[/bold cyan]  Configure your AI provider step by step          [bold cyan]│[/bold cyan]")
+        console.print("[bold cyan]└─────────────────────────────────────────────────┘[/bold cyan]\n")
+
+        providers = {
+            "1": ("ollama",     "🖥️  Ollama       (Local — Free)"),
+            "2": ("openrouter", "🌐  OpenRouter   (Cloud — Multi-model)"),
+            "3": ("gemini",     "✨  Google Gemini (Cloud)"),
+            "4": ("anthropic",  "🧠  Anthropic    (Cloud)"),
+        }
+
+        console.print("[bold]Step 1 — Choose your AI Provider:[/bold]\n")
+        for key, (_, label) in providers.items():
+            active = " [green](current)[/green]" if providers[key][0] == config.model.provider else ""
+            console.print(f"  [cyan]{key}[/cyan]. {label}{active}")
+
+        choice = typer.prompt("\nEnter number", default="1")
+        if choice not in providers:
+            console.print("[red]Invalid choice.[/red]")
+            raise typer.Exit(1)
+
+        provider_id, provider_label = providers[choice]
+        console.print(f"\n  ✅ Selected: {provider_label}\n")
+
+        # Step 2 — API Key (if needed)
+        NEEDS_KEY = {"openrouter", "gemini", "anthropic"}
+        if provider_id in NEEDS_KEY:
+            console.print("[bold]Step 2 — API Key:[/bold]")
+            current_key = ""
+            if provider_id == "openrouter": current_key = config.openrouter.api_key
+            elif provider_id == "gemini":   current_key = config.gemini.api_key
+            elif provider_id == "anthropic": current_key = config.anthropic.api_key
+            masked = f"(current: ****{current_key[-4:]})" if current_key and len(current_key) > 4 else ""
+            api_key = typer.prompt(f"  Enter {provider_id.upper()} API Key {masked}", hide_input=True, default=current_key)
+        else:
+            api_key = ""
+
+        # Step 3 — Model
+        DEFAULT_MODELS = {
+            "ollama":      ["deepseek-coder:1.3b", "llama3", "codestral"],
+            "openrouter":  ["openai/gpt-4o", "anthropic/claude-3.5-sonnet", "tencent/hy3-preview:free"],
+            "gemini":      ["gemini-1.5-pro", "gemini-1.5-flash", "gemini-2.0-flash"],
+            "anthropic":   ["claude-3-5-sonnet-20240620", "claude-3-opus-20240229"],
+        }
+        step_n = "Step 3" if provider_id in NEEDS_KEY else "Step 2"
+        console.print(f"\n[bold]{step_n} — Model:[/bold]")
+        defaults = DEFAULT_MODELS.get(provider_id, [])
+        if defaults:
+            console.print("  Suggested models:")
+            for m in defaults:
+                console.print(f"    • {m}")
+        current_model = config.model.name
+        model_name = typer.prompt(f"\n  Model name", default=current_model)
+
+        # Save
+        console.print("\n[bold]Summary:[/bold]")
+        console.print(f"  Provider : [cyan]{provider_id.upper()}[/cyan]")
+        console.print(f"  Model    : [cyan]{model_name}[/cyan]")
+        if api_key:
+            masked_key = "****" + api_key[-4:] if len(api_key) > 4 else "****"
+            console.print(f"  API Key  : [dim]{masked_key}[/dim]")
+
+        confirm = typer.confirm("\nSave this configuration?", default=True)
+        if not confirm:
+            console.print("[yellow]Configuration not saved.[/yellow]")
+            raise typer.Exit()
+
+        config.model.provider = provider_id
+        config.model.name = model_name
+        if provider_id == "openrouter":
+            config.openrouter.enabled = True
+            if api_key: config.openrouter.api_key = api_key
+            if model_name not in config.openrouter.models:
+                config.openrouter.models.append(model_name)
+        elif provider_id == "gemini":
+            config.gemini.enabled = True
+            config.gemini.model = model_name
+            if api_key: config.gemini.api_key = api_key
+        elif provider_id == "anthropic":
+            config.anthropic.enabled = True
+            config.anthropic.model = model_name
+            if api_key: config.anthropic.api_key = api_key
+        else:
+            config.openrouter.enabled = False
+            config.gemini.enabled = False
+            config.anthropic.enabled = False
+
         save_config(config)
-        display.console.print("\n[bold green]✅ Ollama configuration saved and set as active![/bold green]")
+        console.print("\n[bold green]✅ Configuration saved successfully![/bold green]")
+        console.print(f"   Run [cyan]tuki chat[/cyan] to start using {provider_id.upper()}.\n")
         return
 
-    if setup == ConfigComponent.OPENROUTER:
-        display.console.print("\n[bold cyan]─── OpenRouter Configuration (Cloud) ───[/bold cyan]")
-        config.openrouter.enabled = True
-        config.model.name = typer.prompt("OpenRouter model name", default=config.model.name)
-        config.openrouter.api_key = typer.prompt("OpenRouter API Key", default=config.openrouter.api_key, hide_input=True)
-        save_config(config)
-        display.console.print("\n[bold green]✅ OpenRouter configuration saved and set as active![/bold green]")
-        return
+    # ── Display current config as a pretty table ──────────────────────
+    console.print()
 
-    # Default behavior: show current config
-    import dataclasses
-    import json
-    display.console.print("\n[bold cyan]Current Configuration:[/bold cyan]")
-    data = dataclasses.asdict(config)
-    display.console.print(json.dumps(data, indent=2, ensure_ascii=False))
+    # Active model panel
+    active_provider = config.model.provider.upper()
+    active_model = config.model.name
+    has_key = False
+    if config.model.provider == "openrouter": has_key = bool(config.openrouter.api_key)
+    elif config.model.provider == "gemini":   has_key = bool(config.gemini.api_key)
+    elif config.model.provider == "anthropic": has_key = bool(config.anthropic.api_key)
+
+    key_status = "[green]✓ Set[/green]" if has_key else "[red]✗ Missing[/red]"
+
+    console.print(Panel(
+        f"[bold cyan]{active_provider}[/bold cyan]  ·  [white]{active_model}[/white]  ·  API Key: {key_status}",
+        title="[bold green]▶ Active Model[/bold green]",
+        border_style="green",
+        box=box.ROUNDED
+    ))
+
+    # Agent settings table
+    tbl = Table(box=box.SIMPLE_HEAVY, show_header=True, header_style="bold cyan", padding=(0, 2))
+    tbl.add_column("Setting", style="magenta")
+    tbl.add_column("Value", style="white")
+    tbl.add_row("Risk Level",     f"[{'red' if config.agent.risk_level == 'HIGH' else 'yellow' if config.agent.risk_level == 'MEDIUM' else 'green'}]{config.agent.risk_level}[/]")
+    tbl.add_row("Autonomy",       config.agent.autonomy_level)
+    tbl.add_row("Language",       config.agent.language)
+    tbl.add_row("Stream",         "Yes" if config.agent.stream else "No")
+    tbl.add_row("Think Aloud",    "Yes" if config.agent.think_aloud else "No")
+    tbl.add_row("Context Window", f"{config.model.context_window:,} tokens")
+    tbl.add_row("Max Tokens",     f"{config.model.max_tokens:,}")
+    tbl.add_row("Temperature",    str(config.model.temperature))
+    console.print(tbl)
+
+    console.print("[dim]  Run [cyan]tuki config --setup[/cyan] to change your provider or model.[/dim]\n")
+
 
 
 @app.command("history", help="Shows the past conversation history.")

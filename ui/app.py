@@ -257,26 +257,26 @@ class TukiApp(App):
         if cmd == "/exit":
             self.save_session()
             self.exit()
-        elif cmd == "/history":
-            self.show_history()
         elif cmd == "/clear":
             self.query_one("#chat-log").clear()
-            self.add_message("system", "Chat history cleared.")
+            self.add_message("system", "Chat cleared.")
         elif cmd == "/help":
-            self.add_message("assistant", """
-[bold cyan]Available commands:[/bold cyan]
-- [bold magenta]/exit[/bold magenta]: Exit TukiCode
-- [bold magenta]/clear[/bold magenta]: Clear chat log
-- [bold magenta]/model[/bold magenta] [dim][name][/dim]: Change current model
-- [bold magenta]/risk[/bold magenta] [dim][low/medium/high][/dim]: Change risk level
-- [bold magenta]/autonomy[/bold magenta] [dim][low/medium/high][/dim]: Change autonomy level
-    * [bold green]low[/bold green]: Maximum safety. Asks for confirmation on all actions.
-    * [bold yellow]medium[/bold yellow]: Balanced. Allows reading/listing, asks for writing/deleting.
-    * [bold red]high[/bold red]: High speed. Only asks for confirmation once per turn.
-- [bold magenta]/history[/bold magenta]: Show recent conversations
-- [bold magenta]/site[/bold magenta]: Open official website
-- [bold magenta]/copy[/bold magenta]: Copy last code block to clipboard
-            """)
+            self.add_message("assistant",
+"""[bold cyan]─── TukiCode Commands ───[/bold cyan]
+
+[bold magenta]/setup[/bold magenta]                  → Open the interactive configuration wizard
+[bold magenta]/model[/bold magenta]                  → Open model selection menu
+[bold magenta]/model[/bold magenta] [dim]<name>[/dim]          → Switch directly to a model
+[bold magenta]/risk[/bold magenta] [dim][low|medium|high][/dim] → Set tool risk tolerance
+[bold magenta]/autonomy[/bold magenta] [dim][low|medium|high][/dim]→ Set confirmation level
+[bold magenta]/history[/bold magenta]                → Show past sessions
+[bold magenta]/clear[/bold magenta]                  → Clear chat log
+[bold magenta]/copy[/bold magenta]                   → Copy last code block
+[bold magenta]/site[/bold magenta]                   → Open TukiCode website
+[bold magenta]/exit[/bold magenta]                   → Exit TukiCode
+""")
+        elif cmd == "/setup":
+            self._open_setup_wizard()
         elif cmd == "/site":
             import webbrowser
             webbrowser.open("https://tukicode.site")
@@ -290,7 +290,6 @@ class TukiApp(App):
                     if choice_id and ":" in str(choice_id):
                         provider, model_name = str(choice_id).split(":", 1)
                         self.handle_provider_switch(provider.lower(), model_name)
-                
                 self.push_screen(ModelSelectScreen(options), select_callback)
             else:
                 new_model = args[0]
@@ -298,31 +297,98 @@ class TukiApp(App):
                 self.handle_provider_switch(provider, new_model)
         elif cmd == "/risk":
             if not args:
-                self.add_message("system", f"Current risk: {self.config.agent.risk_level}")
+                current = self.config.agent.risk_level
+                self.add_message("system", f"Current risk: [bold]{current}[/bold]  (options: low / medium / high)")
             else:
-                try:
-                    new_risk = args[0].upper()
-                    self.config.agent.risk_level = new_risk
+                new_risk = args[0].lower()
+                if new_risk in ["low", "medium", "high"]:
+                    self.config.agent.risk_level = new_risk.upper()
                     self.config.save()
-                    self.add_message("system", f"Risk level changed to {new_risk}")
-                except Exception:
-                    self.add_message("error", "Invalid risk level. Use low, medium, or high.")
+                    self.add_message("system", f"Risk level → [bold]{new_risk.upper()}[/bold]")
+                    self.update_status()
+                else:
+                    self.add_message("error", "Invalid risk level. Use: low / medium / high")
         elif cmd == "/autonomy":
             if not args:
-                self.add_message("system", f"Current autonomy: {self.config.agent.autonomy_level}")
+                current = self.config.agent.autonomy_level
+                self.add_message("system", f"Current autonomy: [bold]{current}[/bold]  (options: low / medium / high)")
             else:
                 level = args[0].lower()
                 if level in ["low", "medium", "high"]:
                     self.config.agent.autonomy_level = level
                     self.config.save()
-                    self.add_message("system", f"Autonomy level changed to {level}")
+                    self.add_message("system", f"Autonomy → [bold]{level}[/bold]")
                     self.update_status()
                 else:
-                    self.add_message("error", "Invalid autonomy level. Use low, medium, or high.")
+                    self.add_message("error", "Invalid autonomy level. Use: low / medium / high")
         elif cmd == "/history":
             self.show_history()
         else:
-            self.add_message("error", f"Unknown command: {cmd}")
+            self.add_message("error", f"Unknown command: [bold]{cmd}[/bold]. Type [bold]/help[/bold] for a list.")
+
+    # ── Command Hints ─────────────────────────────────────────────────
+    COMMAND_HINTS = {
+        "/setup":    "→ Open configuration wizard",
+        "/model":    "→ Switch AI model",
+        "/risk":     "→ Set risk level  [low|medium|high]",
+        "/autonomy": "→ Set autonomy    [low|medium|high]",
+        "/history":  "→ Show past sessions",
+        "/clear":    "→ Clear chat log",
+        "/copy":     "→ Copy last code block",
+        "/site":     "→ Open website",
+        "/help":     "→ Show all commands",
+        "/exit":     "→ Exit TukiCode",
+    }
+
+    def on_input_changed(self, event: Input.Changed) -> None:
+        """Muestra hints de comandos cuando el usuario escribe /..."""
+        value = event.value
+        status = self.query_one("#status-bar")
+        if value.startswith("/") and not self._is_running:
+            matches = {k: v for k, v in self.COMMAND_HINTS.items() if k.startswith(value.split()[0])}
+            if matches:
+                hint_text = "   ".join(f"[cyan]{k}[/cyan] {v}" for k, v in list(matches.items())[:4])
+                status.update(hint_text)
+            else:
+                self.update_status()
+        else:
+            self.update_status()
+
+    # ── Setup Wizard Handler ───────────────────────────────────────────
+    def _open_setup_wizard(self):
+        from ui.screens import SetupWizardScreen
+        def wizard_callback(result):
+            if not result:
+                self.add_message("system", "Setup cancelled.")
+                return
+            provider = result["provider"]
+            model = result["model"]
+            key = result.get("key", "")
+            # Guardar en config
+            self.config.model.provider = provider
+            self.config.model.name = model
+            if provider == "openrouter":
+                self.config.openrouter.enabled = True
+                if key: self.config.openrouter.api_key = key
+                if model not in self.config.openrouter.models:
+                    self.config.openrouter.models.append(model)
+            elif provider == "gemini":
+                self.config.gemini.enabled = True
+                self.config.gemini.model = model
+                if key: self.config.gemini.api_key = key
+            elif provider == "anthropic":
+                self.config.anthropic.enabled = True
+                self.config.anthropic.model = model
+                if key: self.config.anthropic.api_key = key
+            else:  # ollama
+                self.config.openrouter.enabled = False
+                self.config.gemini.enabled = False
+                self.config.anthropic.enabled = False
+            self.config.save()
+            self.update_client()
+            self.add_message("system", f"[bold green]✓ Configuration saved![/bold green] Provider: [cyan]{provider.upper()}[/cyan] | Model: [cyan]{model}[/cyan]")
+        self.push_screen(SetupWizardScreen(self.config), wizard_callback)
+
 
     def update_client(self) -> None:
         """Actualiza el cliente LLM según la configuración actual con manejo de errores."""
