@@ -21,10 +21,10 @@ jobs:
             artifact_name: tuki.exe
             asset_name: tuki-windows.exe
           - os: macos-latest
-            artifact_name: tuki
+            artifact_name: tuki-macos
             asset_name: tuki-macos
           - os: ubuntu-latest
-            artifact_name: tuki
+            artifact_name: tuki-linux
             asset_name: tuki-linux
 
     steps:
@@ -83,7 +83,7 @@ jobs:
         with:
           files: |
             dist/tuki-windows.exe/tuki.exe
-            dist/tuki-macos/tuki
-            dist/tuki-linux/tuki
+            dist/tuki-macos/tuki-macos
+            dist/tuki-linux/tuki-linux
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
