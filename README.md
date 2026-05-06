@@ -6,8 +6,9 @@
 
 ---
 
-## What's in v1.2.0
+## What's in v1.2.3
 
+v1.2.3 is the first official cross-platform stable release:
 - **Full TUI** — Fullscreen interface (Textual) with chat panel, file explorer, and Live Console
 - **Interactive Terminal (PTY)** — Real pseudo-terminal for `npm start`, `expo`, and long-running servers
 - **Cross-platform** — Windows (`pywinpty`), macOS and Linux (`ptyprocess`)
@@ -164,8 +165,8 @@ graph TD
 Binaries are built automatically via GitHub Actions when a version tag is pushed:
 
 ```bash
-git tag v1.2.0
-git push origin v1.2.0
+git tag v1.2.3
+git push origin v1.2.3
 ```
 
 The workflow (`.github/workflows/build.yml`) produces:
