@@ -52,6 +52,12 @@ jobs:
         run: |
           pyinstaller --onefile --name tuki tuki.py
           chmod +x dist/tuki
+          # Rename so each platform produces a unique asset name
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            mv dist/tuki dist/tuki-macos
+          else
+            mv dist/tuki dist/tuki-linux
+          fi
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
