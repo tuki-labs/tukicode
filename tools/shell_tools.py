@@ -226,8 +226,44 @@ def is_blocked(command: str) -> bool:
     cmd_lower = command.lower()
     return any(b in cmd_lower for b in BLOCKLIST)
 
-def strip_ansi(text: str) -> str:
+def strip_control_sequences(text: str) -> str:
+    """
+    Elimina secuencias de control de cursor pero PRESERVA colores.
+    Los colores son necesarios para renderizar QRs correctamente.
+    """
     import re
+    if isinstance(text, bytes):
+        text = text.decode("utf-8", errors="replace")
+
+    # Posicionamiento de cursor: ESC[row;colH o ESC[row;colf
+    text = re.sub(r'\x1b\[\d*;\d*[Hf]', '', text)
+    # Movimiento de cursor: ESC[nA/B/C/D (arriba/abajo/der/izq)
+    text = re.sub(r'\x1b\[\d*[ABCD]', '', text)
+    # Borrar pantalla/línea: ESC[nJ / ESC[nK
+    text = re.sub(r'\x1b\[\d*[JK]', '', text)
+    # Mode set/reset: ESC[?25h, ESC[?1004h, etc
+    text = re.sub(r'\x1b\[\?\d+[hl]', '', text)
+    # Mouse tracking
+    text = re.sub(r'\x1b\[[\d;]*[Mm]', '', text)
+    # Keypad mode
+    text = re.sub(r'\x1b[=>]', '', text)
+    # Set title OSC: ESC]0;texto BEL
+    text = re.sub(r'\x1b\]0;[^\x07]*\x07', '', text)
+    text = re.sub(r'\x1b\]0;.*?\\', '', text)
+    # Caracteres de control excepto \n \r \t
+    text = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1a\x1c-\x1f]', '', text)
+    # Normalizar saltos de línea
+    text = re.sub(r'\r\n', '\n', text)
+    text = re.sub(r'\r', '\n', text)
+
+    return text
+
+
+def strip_ansi(text: str) -> str:
+    """Elimina TODOS los códigos ANSI incluyendo colores. Usar solo para output de texto plano."""
+    import re
+    if isinstance(text, bytes):
+        text = text.decode("utf-8", errors="replace")
     ansi_escape = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
     return ansi_escape.sub('', text)
 
@@ -236,7 +272,10 @@ def truncate_output(text: str, max_lines: int = 500) -> str:
         return ""
     if isinstance(text, bytes):
         text = text.decode("utf-8", errors="replace")
-    text = strip_ansi(text)
+    
+    # Limpiar control sequences pero preservar colores
+    text = strip_control_sequences(text)
+    
     lines = text.splitlines()
     if len(lines) <= max_lines:
         return text
