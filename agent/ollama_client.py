@@ -1,5 +1,5 @@
-import ollama
-from typing import Generator, List, Union
+from ollama import AsyncClient
+from typing import Generator, List, Union, AsyncGenerator
 
 class OllamaNotAvailableError(Exception):
     pass
@@ -13,6 +13,7 @@ class OllamaClient:
         self.prompt_tokens = 0
         self.completion_tokens = 0
         self.total_tokens = 0
+        self._client = AsyncClient()
 
     @property
     def supports_tool_calling(self) -> bool:
@@ -21,7 +22,7 @@ class OllamaClient:
         base_name = self.model_name.split(":")[0]
         return base_name in supported_models
 
-    def chat(self, messages: List[dict], tools: List[dict] = None) -> dict:
+    async def chat(self, messages: List[dict], tools: List[dict] = None, response_format: dict = None) -> dict:
         try:
             kwargs = {
                 "model": self.model_name,
@@ -33,16 +34,17 @@ class OllamaClient:
             }
             if self.supports_tool_calling and tools:
                 kwargs["tools"] = tools
+            
+            if response_format and response_format.get("type") == "json_object":
+                kwargs["format"] = "json"
                 
-            response = ollama.chat(**kwargs)
+            response = await self._client.chat(**kwargs)
             self._update_usage(response.get("prompt_eval_count", 0), response.get("eval_count", 0))
             return response
         except Exception as e:
             raise OllamaNotAvailableError(f"Error llamando a Ollama: {str(e)}")
 
-    def chat_stream(self, messages: List[dict], tools: List[dict] = None) -> Generator[Union[str, dict], None, None]:
-        # Native tool calling with streaming in Ollama might return the tool call chunks or not stream at all
-        # We will yield chunks that can be strings or dicts depending on what we receive
+    async def chat_stream(self, messages: List[dict], tools: List[dict] = None) -> AsyncGenerator[Union[str, dict], None]:
         try:
             kwargs = {
                 "model": self.model_name,
@@ -56,12 +58,11 @@ class OllamaClient:
             if self.supports_tool_calling and tools:
                 kwargs["tools"] = tools
                 
-            response_stream = ollama.chat(**kwargs)
-            for chunk in response_stream:
+            response_stream = await self._client.chat(**kwargs)
+            async for chunk in response_stream:
                 if "eval_count" in chunk:
                     self._update_usage(chunk.get("prompt_eval_count", 0), chunk.get("eval_count", 0))
                 
-                # If chunk has tool_calls, yield the whole chunk so loop.py can handle native tool calling
                 if 'message' in chunk:
                     msg = chunk['message']
                     if 'tool_calls' in msg and msg['tool_calls']:
@@ -77,22 +78,20 @@ class OllamaClient:
             self.completion_tokens = completion
             self.total_tokens = prompt + completion
 
-    def list_models(self) -> List[str]:
+    async def list_models(self) -> List[str]:
         try:
-            resp = ollama.list()
-            # Handle object-based response (newer versions)
+            resp = await self._client.list()
             if hasattr(resp, 'models'):
                 return [m.model for m in resp.models]
-            # Handle dict-based response (older versions)
             if isinstance(resp, dict):
                 return [m['name'] for m in resp.get('models', [])]
             return []
         except Exception:
             return []
 
-    def is_available(self) -> bool:
+    async def is_available(self) -> bool:
         try:
-            ollama.list()
+            await self._client.list()
             return True
         except Exception:
             return False

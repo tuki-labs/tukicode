@@ -43,22 +43,43 @@ class AgentLoop:
 
     async def run_turn(self, user_message: str) -> str:
         self.context.add_message("user", user_message)
-        self._turn_confirmed = False # Reset confirmation for each turn
-        
+        self._turn_confirmed = False
+
+        # ── Anti-loop: tracking de repeticiones ──
+        last_tool_calls = []
+        repeated_count = 0
+        MAX_ITERATIONS = 20
+        NUDGE_AT = 8        # iteraciones antes de recordarle que termine
+        MAX_REPEATED = 3    # veces que puede repetir la misma tool antes de cortar
+
         try:
-            for _ in range(20): # max 20 iterations
+            for iteration in range(MAX_ITERATIONS):
                 if self._stop_requested:
                     self._stop_requested = False
                     return "Agent execution stopped by user."
-                
+
                 self.context.compress_if_needed(self.llm_client)
-                
                 messages = self.context.get_messages()
                 native_tools = self._get_native_tools()
-                
-                loop = asyncio.get_event_loop()
-                full_response = await loop.run_in_executor(None, self._chat_and_stream, messages, native_tools)
-                
+
+                # ── Nudge: recordarle al modelo que debe terminar ──
+                if iteration == NUDGE_AT:
+                    self.context.add_message("system",
+                        "You have been working for several steps. "
+                        "If you have enough information, provide your FINAL RESPONSE now. "
+                        "Do not call more tools unless strictly necessary."
+                    )
+
+                # ── Timeout por llamada al LLM (60s) ──
+                try:
+                    full_response = await asyncio.wait_for(
+                        self._chat_and_stream(messages, native_tools),
+                        timeout=60.0
+                    )
+                except asyncio.TimeoutError:
+                    self.display.show_error("LLM response timed out. Retrying...")
+                    continue
+
                 # Debug
                 try:
                     debug_path = Path("last_response.json")
@@ -68,116 +89,150 @@ class AgentLoop:
                         debug_path.write_text(json.dumps(full_response, ensure_ascii=False), encoding="utf-8")
                 except:
                     pass
-                
-                # Extraer thinking antes de parsear
+
+                # Extraer thinking
                 text_for_thinking = ""
                 if isinstance(full_response, str):
                     text_for_thinking = full_response
                 elif isinstance(full_response, dict):
                     if "message" in full_response:
-                        text_for_thinking = full_response["message"].get("content", "")
-                    elif "choices" in full_response and len(full_response["choices"]) > 0:
-                        text_for_thinking = full_response["choices"][0].get("message", {}).get("content", "")
-                        
+                        text_for_thinking = full_response["message"].get("content", "") or ""
+                    elif "choices" in full_response and full_response["choices"]:
+                        text_for_thinking = full_response["choices"][0].get("message", {}).get("content", "") or ""
+
                 if text_for_thinking:
                     thinking, clean_text = extract_thinking(text_for_thinking)
                     if thinking:
                         self.display.show_thinking(thinking)
                     else:
                         self.display.show_thinking("", visible=False)
-                        
+
                     if isinstance(full_response, str):
                         full_response = clean_text
                     elif isinstance(full_response, dict):
                         if "message" in full_response:
                             full_response["message"]["content"] = clean_text
-                        elif "choices" in full_response and len(full_response["choices"]) > 0:
+                        elif "choices" in full_response and full_response["choices"]:
                             full_response["choices"][0]["message"]["content"] = clean_text
-                
-                # Parsear la respuesta (str o dict)
+
                 use_native = getattr(self.llm_client, "supports_tool_calling", False)
                 parsed = parse_response(full_response, use_native=use_native)
-                
+
                 if isinstance(parsed, ToolCall):
-                    # Guardamos lo que nos devolvió para que quede en el historial de contexto
+                    # ── Anti-loop: detectar tool calls repetidas ──
+                    tool_signature = f"{parsed.tool_name}:{json.dumps(parsed.args, sort_keys=True)}"
+                    if tool_signature in last_tool_calls[-3:]:
+                        repeated_count += 1
+                        if repeated_count >= MAX_REPEATED:
+                            # Inyectar mensaje de error y forzar respuesta final
+                            self.context.add_message("tool",
+                                f"ERROR: Tool '{parsed.tool_name}' has been called with the same arguments "
+                                f"{MAX_REPEATED} times in a row. Stop repeating and provide your FINAL RESPONSE.",
+                                tool_call_id=parsed.call_id
+                            )
+                            self.display.show_error(f"Loop detected: '{parsed.tool_name}' repeated {MAX_REPEATED} times. Forcing final response.")
+                            repeated_count = 0
+                            last_tool_calls = []
+                            continue
+                    else:
+                        repeated_count = 0
+
+                    last_tool_calls.append(tool_signature)
+                    if len(last_tool_calls) > 10:
+                        last_tool_calls.pop(0)
+
+                    # Guardar en contexto
                     if isinstance(full_response, dict):
-                        # Extraer el mensaje (OpenRouter o Ollama)
                         msg_obj = {}
                         if "choices" in full_response:
                             msg_obj = full_response["choices"][0].get("message", {})
                         elif "message" in full_response:
                             msg_obj = full_response["message"]
-                        
-                        # Guardar con el formato correcto de roles y tool_calls
                         self.context.add_message("assistant", msg_obj.get("content"), tool_calls=msg_obj.get("tool_calls"))
                     else:
                         self.context.add_message("assistant", str(full_response))
-                    
+
+                    # Confirmación por riesgo
                     tool_item = self.tool_registry._tools.get(parsed.tool_name)
                     if tool_item:
                         from tools.base import BaseTool
                         tool_risk = tool_item.risk_level if isinstance(tool_item, BaseTool) else getattr(tool_item, "__tool_risk__")
-                        
-                        # Determine if confirmation is needed based on autonomy
                         autonomy = self.config.agent.autonomy_level.lower()
                         should_prompt = True
-                        
+
                         if autonomy == "high":
                             if self._turn_confirmed:
                                 should_prompt = False
                         elif autonomy == "medium":
-                            # Solo preguntar para riesgos HIGH o herramientas destructivas/creativas
                             if tool_risk.value < RiskLevel.HIGH.value:
                                 should_prompt = False
-                        
+
                         if should_prompt and tool_risk.value >= RiskLevel.MEDIUM.value:
-                            # Extraer detalles específicos para el prompt
                             details = ""
                             if "command" in parsed.args: details = f"Command: [yellow]{parsed.args['command']}[/yellow]"
                             elif "path" in parsed.args: details = f"Path: [yellow]{parsed.args['path']}[/yellow]"
-                            elif "content" in parsed.args: 
-                                content_snippet = parsed.args['content'][:50] + "..." if len(parsed.args['content']) > 50 else parsed.args['content']
-                                details = f"Content: [yellow]{content_snippet}[/yellow]"
-                            
+                            elif "content" in parsed.args:
+                                snippet = parsed.args['content'][:50] + "..." if len(parsed.args['content']) > 50 else parsed.args['content']
+                                details = f"Content: [yellow]{snippet}[/yellow]"
+
                             msg = f"[bold yellow]Security Check[/bold yellow]\nAction: [cyan]{parsed.tool_name}[/cyan]\nRisk: [yellow]{tool_risk.name}[/yellow]\n{details}\n¿Permitir ejecución?"
-                            
+
                             if hasattr(self.display, "confirm_async"):
                                 confirmed = await self.display.confirm_async(msg)
                             else:
                                 confirmed = self.display.confirm(msg)
-                            
+
                             if not confirmed:
                                 self.context.add_message("tool", "Action cancelled by user.", tool_call_id=parsed.call_id)
                                 return "Action cancelled by user. What would you like to do next?"
-                            
-                            self._turn_confirmed = True # Marcar que el usuario ya autorizó algo en este turno
-                    
-                    # Execute tool
+
+                            self._turn_confirmed = True
+
+                    # Ejecutar tool con timeout
                     details = ""
                     if "command" in parsed.args: details = parsed.args["command"]
                     elif "path" in parsed.args: details = parsed.args["path"]
                     if len(details) > 60: details = details[:57] + "..."
-                    
-                    with self.display.show_spinner(f"Executing {parsed.tool_name}", details=details):
-                        result = await loop.run_in_executor(None, self.tool_registry.execute, parsed.tool_name, parsed.args, self.config.agent.risk_level)
-                    
+
+                    try:
+                        with self.display.show_spinner(f"Executing {parsed.tool_name}", details=details):
+                            loop = asyncio.get_event_loop()
+                            result = await asyncio.wait_for(
+                                loop.run_in_executor(None, self.tool_registry.execute, parsed.tool_name, parsed.args, self.config.agent.risk_level),
+                                timeout=30.0  # tools síncronas tienen 30s máximo
+                            )
+                    except asyncio.TimeoutError:
+                        result_str = f"ERROR: Tool '{parsed.tool_name}' timed out after 30 seconds. Use background=True for long-running processes."
+                        self.display.show_error(f"Tool '{parsed.tool_name}' timed out.")
+                        self.context.add_message("tool", result_str, tool_call_id=parsed.call_id)
+                        continue
+
                     self.display.show_tool_result(parsed.tool_name, result)
-                    
+
                     if result.success and "diff" in result.metadata:
                         self.display.show_diff(result.metadata["diff"])
-                        
+
                     result_str = f"Success: {result.success}\nOutput:\n{result.output}"
                     if result.error:
                         result_str += f"\nError:\n{result.error}"
-                        
-                    # Usar el call_id para compatibilidad nativa (OpenRouter/Ollama)
+
                     self.context.add_message("tool", result_str, tool_call_id=parsed.call_id)
-                
+
                 elif isinstance(parsed, FinalResponse):
+                    self.display.show_thinking("", visible=False)
                     self.context.add_message("assistant", parsed.text)
                     return parsed.text
-            
-            return "ReAct loop iteration limit reached."
+
+            # Límite alcanzado — forzar respuesta con lo que tiene
+            self.display.show_error("Max iterations reached. Forcing final response.")
+            self.context.add_message("system", 
+                "MAX ITERATIONS REACHED. You MUST provide your final response NOW. "
+                "Summarize what you have done and what the result is."
+            )
+            final = await self._chat_and_stream(self.context.get_messages(), None)
+            if isinstance(final, str):
+                return final
+            return "Task completed. Max iterations reached."
 
         except Exception as e:
             from ui.display import StopRequestedException
@@ -223,20 +278,20 @@ class AgentLoop:
             if "tool_calls" in smsg:
                 tmsg["tool_calls"] = smsg["tool_calls"] # Ollama suele mandar el tool_call completo
 
-    def _chat_and_stream(self, messages, tools=None):
+    async def _chat_and_stream(self, messages, tools=None):
         stream = self.llm_client.chat_stream(messages, tools=tools)
         
         full_dict = {}
         
-        def display_gen():
+        async def display_gen():
             nonlocal full_dict
-            for chunk in stream:
+            async for chunk in stream:
                 if isinstance(chunk, str):
                     yield chunk
                 elif isinstance(chunk, dict):
                     self._merge_delta(full_dict, chunk)
                     
-        full_text = self.display.stream_response(display_gen())
+        full_text = await self.display.stream_response(display_gen())
         
         if full_dict and "choices" in full_dict:
             return full_dict

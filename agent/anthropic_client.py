@@ -1,5 +1,5 @@
 import anthropic
-from typing import Generator, List, Union
+from typing import List, Union, AsyncGenerator
 import json
 
 class AnthropicError(Exception):
@@ -15,7 +15,7 @@ class AnthropicClient:
         self.prompt_tokens = 0
         self.completion_tokens = 0
         self.total_tokens = 0
-        self._client = anthropic.Anthropic(api_key=api_key) if api_key else None
+        self._client = anthropic.AsyncAnthropic(api_key=api_key) if api_key else None
 
     @property
     def supports_tool_calling(self) -> bool:
@@ -38,14 +38,18 @@ class AnthropicClient:
         
         return system_instruction.strip(), anthropic_messages
 
-    def chat(self, messages: List[dict], tools: List[dict] = None) -> dict:
+    async def chat(self, messages: List[dict], tools: List[dict] = None, response_format: dict = None) -> dict:
         if not self._client:
             raise AnthropicError("Anthropic API Key is missing.")
             
         system, anthropic_msgs = self._convert_messages(messages)
         
+        # Anthropic doesn't have a direct JSON mode like OpenAI, it relies on prompts
+        # or tool calling. We'll ignore response_format here for now since 
+        # the planner prompt already asks for JSON.
+        
         try:
-            response = self._client.messages.create(
+            response = await self._client.messages.create(
                 model=self.model_name,
                 system=system,
                 messages=anthropic_msgs,
@@ -66,25 +70,25 @@ class AnthropicClient:
         except Exception as e:
             raise AnthropicError(f"Error in Anthropic chat: {str(e)}")
 
-    def chat_stream(self, messages: List[dict], tools: List[dict] = None) -> Generator[Union[str, dict], None, None]:
+    async def chat_stream(self, messages: List[dict], tools: List[dict] = None) -> AsyncGenerator[Union[str, dict], None]:
         if not self._client:
             raise AnthropicError("Anthropic API Key is missing.")
 
         system, anthropic_msgs = self._convert_messages(messages)
         
         try:
-            with self._client.messages.stream(
+            async with self._client.messages.stream(
                 model=self.model_name,
                 system=system,
                 messages=anthropic_msgs,
                 max_tokens=self.max_tokens,
                 temperature=self.temperature
             ) as stream:
-                for text in stream.text_stream:
+                async for text in stream.text_stream:
                     yield text
                 
                 # Usage is available after stream ends
-                final_msg = stream.get_final_message()
+                final_msg = await stream.get_final_message()
                 self._update_usage(final_msg.usage.input_tokens, final_msg.usage.output_tokens)
         except Exception as e:
             raise AnthropicError(f"Error in Anthropic stream: {str(e)}")
@@ -99,3 +103,6 @@ class AnthropicClient:
 
     def list_models(self) -> List[str]:
         return [self.model_name, "claude-3-5-sonnet-20240620", "claude-3-opus-20240229"]
+
+    async def close(self):
+        await self._client.close()
