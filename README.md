@@ -1,7 +1,7 @@
 # TukiCode
 
 <div align="center">
-  <img src="./media/tukilogo.png" alt="TukiCode Logo" width="200"/>
+  <img src="./media/tukilogo.png" alt="TukiCode Logo" width="100"/>
   <h3>Stable Release v1.3.1</h3>
 </div>
 
