@@ -76,9 +76,15 @@ class TukiController:
         try:
             pending = self.planner_state.get_pending_steps()
             if not pending:
-                 plan = await self.planner.generate_plan(text, str(Path.cwd()))
-                 self.planner_state.set_plan(plan)
-                 
+                plan = await self.planner.generate_plan(text, str(Path.cwd()))
+                self.planner_state.set_plan(plan)
+
+                # Show the plan before executing (no confirmation needed in Build Mode)
+                plan_str = "\n".join(
+                    [f"{s['id']}. {s['description']}" for s in self.planner_state.state["plan"]]
+                )
+                self.display.print(f"**Auto-generated Plan:**\n{plan_str}\n")
+
             self.display.print("Starting execution directly...")
             await self.executor.execute_plan()
         except Exception as e:
