@@ -1,6 +1,9 @@
 # TukiCode
 
-![TukiCode Logo](./media/tukilogo.png)
+<div align="center">
+  <img src="./media/tukilogo.png" alt="TukiCode Logo" width="200"/>
+  <h3>Stable Release v1.3.1</h3>
+</div>
 
 **TukiCode** is an open-source CLI coding agent built in Python. It runs locally with Ollama or in the cloud with OpenRouter, Gemini, and Anthropic. It features a fully asynchronous architecture designed for high performance and responsiveness.
 
@@ -34,6 +37,7 @@ curl -fsSL https://tukicode.site/api/install.sh | bash
 ```
 
 **First run on macOS:** If you see a security warning, run:
+
 ```bash
 xattr -d com.apple.quarantine ~/.local/bin/tuki
 ```
@@ -86,6 +90,36 @@ tuki config --model     # Change model only
 | `deepseek/deepseek-chat-v3.2` | Strong coding tasks |
 
 > TukiCode requires models with **native tool-calling support** for full agent functionality.
+
+---
+
+## Working Modes
+
+TukiCode has three distinct operating modes, selectable via tabs in the TUI. Each routes your input through a different pipeline in `core/controller.py`.
+
+| Mode | Tab | Pipeline | Best For |
+|---|---|---|---|
+| **Chat** | Chat Mode | `AgentLoop.run_turn()` directly | Quick questions, isolated fixes, explanations |
+| **Plan** | Plan Mode | `Planner` → shows steps → **asks confirmation** → `Executor` | Controlled multi-step tasks where you want to review before execution |
+| **Build** | Build Mode | `Planner` → **shows steps** → `Executor` immediately | Autonomous end-to-end project generation without interruptions |
+
+### Chat Mode
+
+The agent receives your message and enters the ReAct loop directly. It thinks, calls tools, observes results, and loops until it produces a `FinalResponse`. No structured plan is generated — the model decides each action on the fly.
+
+### Plan Mode
+
+1. Your message is sent to `Planner.generate_plan()`, which calls the LLM and returns a JSON array of atomic steps.
+2. The plan is displayed and the agent **pauses**, asking `"Do you want to execute this plan? (y/n)"`.
+3. If confirmed, `Executor.execute_plan()` runs each step sequentially via `AgentLoop.run_turn()`, with retries and model fallback on failure.
+
+### Build Mode
+
+1. If there is a pending plan in `planner_state.json`, execution resumes from the last pending step.
+2. If there is no existing plan, `Planner.generate_plan()` is called automatically. The generated plan is **displayed** in the chat before execution starts.
+3. `Executor.execute_plan()` runs immediately — **no confirmation is asked**.
+
+> **When to use Build vs Plan:** Use **Plan** when you want to review and approve the strategy first. Use **Build** when you trust the agent to scaffold autonomously and want speed.
 
 ---
 
