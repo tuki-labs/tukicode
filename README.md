@@ -1,20 +1,19 @@
 # TukiCode
 
-![](./media/tukilogo.png)
+![TukiCode Logo](./media/tukilogo.png)
 
-**TukiCode** is an open-source CLI coding agent built in Python. It runs locally with Ollama or in the cloud with OpenRouter, Gemini, and Anthropic — no subscriptions, no hidden costs.
+**TukiCode** is an open-source CLI coding agent built in Python. It runs locally with Ollama or in the cloud with OpenRouter, Gemini, and Anthropic. It features a fully asynchronous architecture designed for high performance and responsiveness.
 
 ---
 
-## What's in v1.2.3
+## What's New
 
-v1.2.3 is the first official cross-platform stable release:
-- **Full TUI** — Fullscreen interface (Textual) with chat panel, file explorer, and Live Console
-- **Interactive Terminal (PTY)** — Real pseudo-terminal for `npm start`, `expo`, and long-running servers
-- **Cross-platform** — Windows (`pywinpty`), macOS and Linux (`ptyprocess`)
-- **VT100 Emulation** — QR codes and rich terminal output rendered correctly via `pyte`
-- **Universal Setup Wizard** — `tuki config --setup` guides you through every provider
-- **Multi-Provider** — Ollama (local), OpenRouter, Gemini, Anthropic
+- **Asynchronous Architecture** - All LLM clients use native async methods (httpx, asyncio) for non-blocking execution and faster streaming.
+- **MVC Separation** - Business logic, AI model switching, and database interactions are isolated in a dedicated Controller, completely separated from the UI layer.
+- **Structured Planner** - The agent's planner strictly enforces JSON structured outputs to generate precise, atomic step-by-step implementation plans.
+- **Full TUI** - Fullscreen interface (Textual) with chat panel, file explorer, and Live Console.
+- **Interactive Terminal (PTY)** - Real pseudo-terminal for long-running servers and interactive commands.
+- **Multi-Provider Support** - Ollama (local), OpenRouter, Gemini, Anthropic.
 
 ---
 
@@ -34,10 +33,10 @@ Downloads `tuki.exe` to `%LOCALAPPDATA%\TukiCode\bin` and adds it to your PATH.
 curl -fsSL https://tukicode.site/api/install.sh | bash
 ```
 
-> **First run on macOS:** If you see a security warning, run:
-> ```bash
-> xattr -d com.apple.quarantine ~/.local/bin/tuki
-> ```
+**First run on macOS:** If you see a security warning, run:
+```bash
+xattr -d com.apple.quarantine ~/.local/bin/tuki
+```
 
 ### Linux
 
@@ -73,7 +72,7 @@ tuki chat
 ## Configuration
 
 ```bash
-tuki config --setup     # Interactive wizard (Ollama / OpenRouter / Gemini / Anthropic)
+tuki config --setup     # Interactive wizard
 tuki config             # Show current configuration
 tuki config --model     # Change model only
 ```
@@ -82,7 +81,7 @@ tuki config --model     # Change model only
 
 | Model | Notes |
 |---|---|
-| `tencent/hy3-preview:free` | ⭐ Recommended — best tool-calling on free tier |
+| `tencent/hy3-preview:free` | Recommended: best tool-calling on free tier |
 | `moonshotai/kimi-k2.5` | Fast reasoning |
 | `deepseek/deepseek-chat-v3.2` | Strong coding tasks |
 
@@ -108,7 +107,7 @@ tuki config --model     # Change model only
 
 | Shortcut | Action |
 |---|---|
-| `Ctrl+S` | Emergency stop — halt the current agent execution |
+| `Ctrl+S` | Emergency stop: halt the current agent execution |
 | `Ctrl+B` | Toggle the Live Console panel |
 | `Ctrl+L` | Clear chat log |
 
@@ -123,73 +122,22 @@ tuki config --model     # Change model only
 
 ---
 
-## Architecture
+## Architecture Summary
 
 ```
-tuki.py              ← CLI entry point (Typer)
+tuki.py              <- CLI entry point (Typer)
+core/
+  controller.py      <- TukiController (Business Logic and LLM Management)
 agent/
-  loop.py            ← ReAct reasoning loop
-  context.py         ← Token-aware context window
-  openrouter_client.py
-  gemini_client.py
-  anthropic_client.py
+  loop.py            <- ReAct reasoning loop (Async)
+  planner.py         <- Structured JSON output planner
+  executor.py        <- Step-by-step async plan executor
+  clients...         <- Async API Clients
 tools/
-  shell_tools.py     ← Cross-platform PTY + subprocess execution
-  file_tools.py      ← Read / Write / Patch files
-  search_tools.py    ← Web search
-  registry.py        ← Tool registration and dispatch
+  registry.py        <- Tool registration and dispatch
 ui/
-  app.py             ← Textual TUI application
-  screens.py         ← Modal screens (setup wizard, model selector)
-  display.py         ← Live Console panel
-config.py            ← TOML configuration manager
+  app.py             <- Textual TUI application
+config.py            <- TOML configuration manager
 ```
-
-```mermaid
-graph TD
-    User([User]) <--> TUI[Textual TUI]
-    TUI <--> Loop[Agent Loop: ReAct]
-    Loop <--> Client[LLM Client]
-    Loop <--> Registry[Tool Registry]
-    Registry --> Shell[Shell Tools — PTY / subprocess]
-    Registry --> Files[File Tools]
-    Registry --> Search[Search Tools]
-    TUI --> Console[Live Console — pyte VT100]
-    Shell --> Console
-```
-
----
-
-## Building Binaries
-
-Binaries are built automatically via GitHub Actions when a version tag is pushed:
-
-```bash
-git tag v1.2.3
-git push origin v1.2.3
-```
-
-The workflow (`.github/workflows/build.yml`) produces:
-
-| Platform | Binary |
-|---|---|
-| Windows | `tuki.exe` |
-| macOS | `tuki` |
-| Linux | `tuki` |
-
-To build manually:
-
-```bash
-pip install pyinstaller
-
-# Windows
-pyinstaller --onefile --name tuki --hidden-import winpty tuki.py
-
-# macOS / Linux
-pyinstaller --onefile --name tuki tuki.py
-chmod +x dist/tuki
-```
-
----
 
 For deeper technical documentation, see [ARCHITECTURE.md](./ARCHITECTURE.md).
