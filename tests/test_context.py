@@ -1,5 +1,5 @@
 import pytest
-from tukicode.agent.context import ConversationContext
+from agent.context import ConversationContext
 
 def test_context_add_message():
     ctx = ConversationContext(1000)

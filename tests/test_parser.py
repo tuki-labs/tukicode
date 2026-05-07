@@ -1,5 +1,5 @@
 import pytest
-from tukicode.agent.parser import parse_response, ToolCall, FinalResponse
+from agent.parser import parse_response, ToolCall, FinalResponse
 
 def test_parse_tool_call_valid():
     text = """
