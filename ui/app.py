@@ -1,5 +1,5 @@
 from textual.app import App, ComposeResult
-from textual.widgets import Header, Footer, Input, RichLog, Static, DirectoryTree, OptionList
+from textual.widgets import Header, Footer, Input, RichLog, Static, DirectoryTree, OptionList, Tabs, Tab
 from textual.widgets.option_list import Option
 from textual.containers import Horizontal, Vertical, Container
 from textual.binding import Binding
@@ -122,32 +122,25 @@ class TukiApp(App):
         Binding("ctrl+b", "toggle_console", "Toggle Console"),
     ]
 
-    def __init__(self, config, client, registry, context, session_id=None):
+    def __init__(self, controller):
         super().__init__()
-        self.config = config
-        self.client = client
-        self.registry = registry
-        self.context = context
-        self.session_id = session_id
-        from agent.loop import AgentLoop
+        self.controller = controller
+        # Sync Display with Controller
+        self.controller.display.set_app(self)
         
-        # Conectar Display con App
-        from ui.display import TukiDisplay
-        self.tuki_display = TukiDisplay()
-        self.tuki_display.set_app(self)
-        
-        # Conectar herramientas con Display para la consola en vivo
-        from tools.shell_tools import set_display
-        set_display(self.tuki_display)
-        
-        self.agent_loop = AgentLoop(config, client, registry, context, self.tuki_display)
+        # mascot and state
         self.anim = TukiAnimation(start_thread=False)
-        self.session_title = None
         self._confirm_future = None
         self._is_running = False
+        self.session_title = None
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
+        yield Tabs(
+            Tab("Chat Mode", id="tab-chat"),
+            Tab("Plan Mode", id="tab-plan"),
+            Tab("Build Mode", id="tab-build")
+        )
         with Horizontal(id="main-container"):
             with Vertical(id="left-panel"):
                 yield Static(id="mascot-container")
@@ -169,13 +162,12 @@ class TukiApp(App):
         self.query_one("#input-bar").focus()
         
         # Restaurar historial si existe
-        messages = self.context.get_messages()
+        messages = self.controller.context.get_messages()
         if len(messages) > 1:
-            self.add_message("system", f"--- Restored Session {self.session_id} ---")
+            self.add_message("system", f"--- Restored Session {self.controller.session_id} ---")
             for msg in messages:
                 role = msg.get("role")
                 content = msg.get("content")
-                # No mostrar el system prompt base para no ensuciar
                 if role == "system" and "TukiCode" in (content or ""):
                     continue
                 if content:
@@ -190,11 +182,21 @@ class TukiApp(App):
         self.query_one("#mascot-container").update(Text.from_ansi("\n".join(frame)))
 
     def update_status(self) -> None:
-        model = self.config.model.name
-        tokens = int(self.context.token_count)
-        risk = self.config.agent.risk_level
-        autonomy = self.config.agent.autonomy_level.upper()
-        status = f"Model: {model} | Tokens: {tokens} | Risk: {risk} | Autonomy: {autonomy}"
+        model = self.controller.config.model.name
+        tokens = int(self.controller.context.token_count)
+        risk = self.controller.config.agent.risk_level
+        autonomy = self.controller.config.agent.autonomy_level.upper()
+        mode = self.controller.mode.upper()
+        
+        step_info = ""
+        p_state = self.controller.planner_state.state
+        if p_state["status"] in ["building", "pending_confirmation"]:
+            step = p_state["current_step"]
+            total = len(p_state["plan"])
+            if total > 0:
+                step_info = f" | Plan: {step}/{total}"
+
+        status = f"Mode: {mode} | Model: {model} | Tokens: {tokens} | Risk: {risk} | Autonomy: {autonomy}{step_info}"
         self.query_one("#status-bar").update(status)
 
     async def on_input_submitted(self, event: Input.Submitted) -> None:
@@ -203,7 +205,6 @@ class TukiApp(App):
             return
         
         if self._is_running and not self._confirm_future:
-            # Silenciosamente ignorar - el input ya está deshabilitado visualmente
             return
             
         event.input.value = ""
@@ -222,13 +223,22 @@ class TukiApp(App):
         self.add_message("user", text)
         self._is_running = True
         self._set_input_locked(True)
-        asyncio.create_task(self.run_agent(text))
+        
+        async def run_task():
+            try:
+                await self.controller.process_input(text)
+            finally:
+                self._is_running = False
+                self._set_input_locked(False)
+                self.update_status()
 
-    async def confirm_prompt(self, message: str) -> bool:
-        self.add_message("system", f"[bold yellow]⚠️ {message}[/bold yellow]")
+        asyncio.create_task(run_task())
+
+    async def confirm_prompt(self, message: str, color: str = "yellow") -> bool:
+        self.add_message("system", f"[bold {color}]⚠️ {message}[/bold {color}]")
         input_bar = self.query_one("#input-bar")
         input_bar.placeholder = "Confirm? (y/n) >"
-        input_bar.styles.border = ("solid", "yellow")
+        input_bar.styles.border = ("solid", color)
         self._confirm_future = asyncio.get_event_loop().create_future()
         try:
             return await self._confirm_future
@@ -238,15 +248,22 @@ class TukiApp(App):
             self._confirm_future = None
 
     async def on_directory_tree_file_selected(self, event: DirectoryTree.FileSelected) -> None:
-        """Al seleccionar un archivo en el árbol, pedir a Tuki que lo analice."""
         path = str(event.path)
         self.add_message("system", f"Analyzing file: [cyan]{path}[/cyan]")
-        
-        # Enviar mensaje automático al agente
         user_text = f"Read and analyze the file: {path}"
         self.add_message("user", user_text)
         self._is_running = True
-        asyncio.create_task(self.run_agent(user_text))
+        self._set_input_locked(True)
+        
+        async def run_task():
+            try:
+                await self.controller.process_input(user_text)
+            finally:
+                self._is_running = False
+                self._set_input_locked(False)
+                self.update_status()
+        
+        asyncio.create_task(run_task())
 
     async def handle_command(self, text):
         parts = text.split()
@@ -255,7 +272,7 @@ class TukiApp(App):
         args = parts[1:]
 
         if cmd == "/exit":
-            self.save_session()
+            self.controller.save_session()
             self.exit()
         elif cmd == "/clear":
             self.query_one("#chat-log").clear()
@@ -293,30 +310,30 @@ class TukiApp(App):
                 self.push_screen(ModelSelectScreen(options), select_callback)
             else:
                 new_model = args[0]
-                provider = self.guess_provider(new_model)
+                provider = self.controller.guess_provider(new_model)
                 self.handle_provider_switch(provider, new_model)
         elif cmd == "/risk":
             if not args:
-                current = self.config.agent.risk_level
+                current = self.controller.config.agent.risk_level
                 self.add_message("system", f"Current risk: [bold]{current}[/bold]  (options: low / medium / high)")
             else:
                 new_risk = args[0].lower()
                 if new_risk in ["low", "medium", "high"]:
-                    self.config.agent.risk_level = new_risk.upper()
-                    self.config.save()
+                    self.controller.config.agent.risk_level = new_risk.upper()
+                    self.controller.config.save()
                     self.add_message("system", f"Risk level → [bold]{new_risk.upper()}[/bold]")
                     self.update_status()
                 else:
                     self.add_message("error", "Invalid risk level. Use: low / medium / high")
         elif cmd == "/autonomy":
             if not args:
-                current = self.config.agent.autonomy_level
+                current = self.controller.config.agent.autonomy_level
                 self.add_message("system", f"Current autonomy: [bold]{current}[/bold]  (options: low / medium / high)")
             else:
                 level = args[0].lower()
                 if level in ["low", "medium", "high"]:
-                    self.config.agent.autonomy_level = level
-                    self.config.save()
+                    self.controller.config.agent.autonomy_level = level
+                    self.controller.config.save()
                     self.add_message("system", f"Autonomy → [bold]{level}[/bold]")
                     self.update_status()
                 else:
@@ -326,7 +343,6 @@ class TukiApp(App):
         else:
             self.add_message("error", f"Unknown command: [bold]{cmd}[/bold]. Type [bold]/help[/bold] for a list.")
 
-    # ── Command Hints ─────────────────────────────────────────────────
     COMMAND_HINTS = {
         "/setup":    "→ Open configuration wizard",
         "/model":    "→ Switch AI model",
@@ -341,7 +357,6 @@ class TukiApp(App):
     }
 
     def on_input_changed(self, event: Input.Changed) -> None:
-        """Muestra hints de comandos cuando el usuario escribe /..."""
         value = event.value
         status = self.query_one("#status-bar")
         if value.startswith("/") and not self._is_running:
@@ -354,7 +369,6 @@ class TukiApp(App):
         else:
             self.update_status()
 
-    # ── Setup Wizard Handler ───────────────────────────────────────────
     def _open_setup_wizard(self):
         from ui.screens import SetupWizardScreen
         def wizard_callback(result):
@@ -364,123 +378,50 @@ class TukiApp(App):
             provider = result["provider"]
             model = result["model"]
             key = result.get("key", "")
-            # Guardar en config
-            self.config.model.provider = provider
-            self.config.model.name = model
-            if provider == "openrouter":
-                self.config.openrouter.enabled = True
-                if key: self.config.openrouter.api_key = key
-                if model not in self.config.openrouter.models:
-                    self.config.openrouter.models.append(model)
-            elif provider == "gemini":
-                self.config.gemini.enabled = True
-                self.config.gemini.model = model
-                if key: self.config.gemini.api_key = key
-            elif provider == "anthropic":
-                self.config.anthropic.enabled = True
-                self.config.anthropic.model = model
-                if key: self.config.anthropic.api_key = key
-            else:  # ollama
-                self.config.openrouter.enabled = False
-                self.config.gemini.enabled = False
-                self.config.anthropic.enabled = False
-            self.config.save()
-            self.update_client()
-            self.add_message("system", f"[bold green]✓ Configuration saved![/bold green] Provider: [cyan]{provider.upper()}[/cyan] | Model: [cyan]{model}[/cyan]")
-        self.push_screen(SetupWizardScreen(self.config), wizard_callback)
-
-
-    def update_client(self) -> None:
-        """Actualiza el cliente LLM según la configuración actual con manejo de errores."""
-        from agent.ollama_client import OllamaClient
-        from agent.openrouter_client import OpenRouterClient
-        from agent.gemini_client import GeminiClient
-        from agent.anthropic_client import AnthropicClient
-        
-        provider = self.config.model.provider.lower()
-        model_name = self.config.model.name
-        
-        try:
-            if provider == "gemini":
-                if not self.config.gemini.api_key: raise ValueError("Gemini API Key is missing.")
-                self.client = GeminiClient(self.config.gemini.model, self.config.model.temperature, self.config.model.max_tokens, True, self.config.gemini.api_key)
-            elif provider == "anthropic":
-                if not self.config.anthropic.api_key: raise ValueError("Anthropic API Key is missing.")
-                self.client = AnthropicClient(self.config.anthropic.model, self.config.model.temperature, self.config.model.max_tokens, True, self.config.anthropic.api_key)
-            elif provider == "openrouter":
-                if not self.config.openrouter.api_key: raise ValueError("OpenRouter API Key is missing.")
-                self.client = OpenRouterClient(model_name, self.config.model.temperature, self.config.model.max_tokens, True, self.config.openrouter.api_key)
-            else:
-                self.client = OllamaClient(model_name, self.config.model.temperature, self.config.model.max_tokens, True)
-                if not self.client.is_available():
-                    raise ConnectionError("Ollama is not running. Start it with 'ollama serve'.")
             
-            self.agent_loop.llm_client = self.client
-            self.update_status()
-            self.add_message("system", f"Successfully switched to [bold cyan]{model_name}[/bold cyan] ({provider.upper()})")
-        except Exception as e:
-            self.add_message("error", f"Failed to switch model: {str(e)}")
-            # Intentar volver a Ollama si falla
-            if provider != "ollama":
-                self.add_message("system", "Reverting to Ollama default...")
-                self.config.model.provider = "ollama"
-                self.update_client()
+            try:
+                self.controller.save_setup(provider, model, key)
+                self.add_message("system", f"[bold green]✓ Configuration saved![/bold green] Provider: [cyan]{provider.upper()}[/cyan] | Model: [cyan]{model}[/cyan]")
+            except Exception as e:
+                self.add_message("error", str(e))
+                
+        self.push_screen(SetupWizardScreen(self.controller.config), wizard_callback)
 
     def handle_provider_switch(self, provider: str, model_name: str = None) -> None:
-        """Lógica para cambiar de proveedor, pidiendo API key si es necesario."""
-        self.config.model.provider = provider
-        if model_name:
-            self.config.model.name = model_name
-        
         # Verificar si necesita API Key
         needs_key = provider in ["gemini", "anthropic", "openrouter"]
         current_key = ""
-        if provider == "gemini": current_key = self.config.gemini.api_key
-        elif provider == "anthropic": current_key = self.config.anthropic.api_key
-        elif provider == "openrouter": current_key = self.config.openrouter.api_key
+        if provider == "gemini": current_key = self.controller.config.gemini.api_key
+        elif provider == "anthropic": current_key = self.controller.config.anthropic.api_key
+        elif provider == "openrouter": current_key = self.controller.config.openrouter.api_key
         
         if needs_key and not current_key:
             def api_callback(key):
                 if key:
-                    if provider == "gemini": 
-                        self.config.gemini.api_key = key
-                        if model_name: 
-                            self.config.gemini.model = model_name
-                            if model_name not in self.config.gemini.models: self.config.gemini.models.append(model_name)
-                    elif provider == "anthropic": 
-                        self.config.anthropic.api_key = key
-                        if model_name: 
-                            self.config.anthropic.model = model_name
-                            if model_name not in self.config.anthropic.models: self.config.anthropic.models.append(model_name)
-                    elif provider == "openrouter": 
-                        self.config.openrouter.api_key = key
-                        if model_name and model_name not in self.config.openrouter.models: self.config.openrouter.models.append(model_name)
-                    self.config.save()
-                    self.update_client()
-                    self.add_message("system", f"Provider changed to {provider.upper()} and API Key saved.")
+                    if provider == "gemini": self.controller.config.gemini.api_key = key
+                    elif provider == "anthropic": self.controller.config.anthropic.api_key = key
+                    elif provider == "openrouter": self.controller.config.openrouter.api_key = key
+                    
+                    try:
+                        self.controller.switch_model(provider, model_name)
+                        self.add_message("system", f"Provider changed to {provider.upper()} and API Key saved.")
+                    except Exception as e:
+                        self.add_message("error", str(e))
                 else:
                     self.add_message("error", f"API Key required for {provider.upper()}")
             
             self.push_screen(ApiKeyScreen(provider.upper()), api_callback)
         else:
-            if provider == "gemini" and model_name: 
-                self.config.gemini.model = model_name
-                if model_name not in self.config.gemini.models: self.config.gemini.models.append(model_name)
-            elif provider == "anthropic" and model_name: 
-                self.config.anthropic.model = model_name
-                if model_name not in self.config.anthropic.models: self.config.anthropic.models.append(model_name)
-            elif provider == "openrouter" and model_name:
-                if model_name not in self.config.openrouter.models: self.config.openrouter.models.append(model_name)
-                
-            self.config.save()
-            self.update_client()
-            self.add_message("system", f"Provider changed to {provider.upper()}")
+            try:
+                self.controller.switch_model(provider, model_name)
+                self.add_message("system", f"Provider changed to {provider.upper()}")
+            except Exception as e:
+                self.add_message("error", str(e))
 
     def get_model_options(self) -> list:
-        """Obtiene la lista de modelos con indicadores de estado e historial."""
         options = []
-        curr_provider = self.config.model.provider.lower()
-        curr_model = self.config.model.name
+        curr_provider = self.controller.config.model.provider.lower()
+        curr_model = self.controller.config.model.name
         
         def fmt_option(p, m):
             is_active = (p == curr_provider and m == curr_model)
@@ -488,60 +429,31 @@ class TukiApp(App):
             if is_active: text += " [b](active)[/b]"
             return Option(text, id=f"{p}:{m}")
 
-        # 1. Ollama
-        options.append(Option("[b][cyan]Ollama (Local)[/cyan][/b]", id="header:ollama", disabled=True))
-        try:
-            from agent.ollama_client import OllamaClient
-            o_client = OllamaClient(curr_model, 0, 0, False)
-            for m in o_client.list_models():
-                options.append(fmt_option("ollama", m))
-        except Exception:
-            options.append(Option("  (Error connecting to Ollama)", disabled=True))
+        models = self.controller.get_available_models()
 
-        # 2. Google
+        options.append(Option("[b][cyan]Ollama (Local)[/cyan][/b]", id="header:ollama", disabled=True))
+        if models["ollama"]:
+            for m in models["ollama"]:
+                options.append(fmt_option("ollama", m))
+        else:
+            options.append(Option("  (Error connecting to Ollama or no models)", disabled=True))
+
         options.append(Option("[b][cyan]Google (Gemini)[/cyan][/b]", id="header:gemini", disabled=True))
-        for m in self.config.gemini.models:
+        for m in models["gemini"]:
             options.append(fmt_option("gemini", m))
 
-        # 3. Anthropic
         options.append(Option("[b][cyan]Anthropic (Claude)[/cyan][/b]", id="header:anthropic", disabled=True))
-        for m in self.config.anthropic.models:
+        for m in models["anthropic"]:
             options.append(fmt_option("anthropic", m))
 
-        # 4. OpenRouter
         options.append(Option("[b][cyan]OpenRouter (Cloud)[/cyan][/b]", id="header:openrouter", disabled=True))
-        for m in self.config.openrouter.models:
+        for m in models["openrouter"]:
             options.append(fmt_option("openrouter", m))
         
         return options
 
-    def guess_provider(self, model_name: str) -> str:
-        """Adivina el proveedor basado en el nombre del modelo."""
-        m = model_name.lower()
-        if "gemini" in m: return "gemini"
-        if "claude" in m or "anthropic" in m: return "anthropic"
-        if "/" in m: return "openrouter" # Ejemplo: openai/gpt-4o
-        return "ollama"
-
-    def save_session(self) -> None:
-        from tuki import get_app_dir
-        db_path = get_app_dir() / "data" / "history.db"
-        self.agent_loop.save_to_history(str(db_path), custom_title=self.session_title, session_id=self.session_id)
-        self.add_message("system", "Conversation saved.")
-
     def show_history(self) -> None:
-        from tuki import get_app_dir
-        import sqlite3
-        db_path = get_app_dir() / "data" / "history.db"
-        if not db_path.exists():
-            self.add_message("system", "No history found.")
-            return
-            
-        conn = sqlite3.connect(str(db_path))
-        c = conn.cursor()
-        c.execute("SELECT id, date, title, model FROM history ORDER BY id DESC LIMIT 10")
-        rows = c.fetchall()
-        conn.close()
+        rows = self.controller.get_history(limit=10)
         
         if not rows:
             self.add_message("system", "No conversations in history.")
@@ -580,7 +492,6 @@ class TukiApp(App):
         from rich.markdown import Markdown
         log = self.query_one("#chat-log")
         
-        # Envolver strings en el renderizador adecuado
         if isinstance(text, str):
             if role in ["assistant", "user"] and ("#" in text or "**" in text or "```" in text):
                 renderable = Markdown(text)
@@ -597,6 +508,7 @@ class TukiApp(App):
         elif role == "assistant":
             log.write(f"\n[bold cyan]TukiCode:[/bold cyan]")
             log.write(renderable)
+            if isinstance(text, str): self._last_assistant_response = text
         elif role == "tool_result":
             log.write(f"\n[bold green]Tool Result:[/bold green]")
             log.write(renderable)
@@ -618,7 +530,6 @@ class TukiApp(App):
     def update_active_response(self, text: str, role: str = "assistant"):
         panel = self.query_one("#active-response")
         if text:
-            # Si contiene markdown o similar
             if role == "assistant" and ("#" in text or "**" in text or "```" in text):
                 renderable = Markdown(text)
             else:
@@ -627,7 +538,6 @@ class TukiApp(App):
             header = "\n[bold cyan]TukiCode:[/bold cyan]\n"
             panel.update(header + text)
             panel.add_class("visible")
-            # Scroll chat log to bottom to make room
             log = self.query_one("#chat-log")
             log.scroll_end()
             panel.scroll_visible()
@@ -641,22 +551,15 @@ class TukiApp(App):
         if final_text:
             self.add_message(role, final_text)
 
-    async def run_agent(self, text):
-        try:
-            response = await self.agent_loop.run_turn(text)
-            self._last_assistant_response = response
-        except Exception as e:
-            from ui.display import StopRequestedException
-            if isinstance(e, StopRequestedException):
-                self.add_message("system", "[bold red]Agent stopped.[/bold red]")
-            else:
-                self.add_message("error", str(e))
-        finally:
-            self._is_running = False
-            self._set_input_locked(False)
+    def on_tabs_tab_activated(self, event: Tabs.TabActivated) -> None:
+        tab_id = event.tab.id
+        mode_map = {"tab-chat": "chat", "tab-plan": "plan", "tab-build": "build"}
+        mode = mode_map.get(tab_id, "chat")
+        self.controller.set_mode(mode)
+        self.add_message("system", f"Switched to [bold]{mode.upper()}[/bold] mode.")
+        self.update_status()
 
     def _set_input_locked(self, locked: bool):
-        """Bloquea/desbloquea el input bar visualmente para que el usuario sepa que el agente está ocupado."""
         try:
             input_bar = self.query_one("#input-bar")
             if locked:
@@ -678,20 +581,15 @@ class TukiApp(App):
         self.add_message("system", "Chat history cleared.")
 
     def action_stop_agent(self) -> None:
-        """Detiene la ejecución del agente de forma inmediata."""
         if self._is_running:
-            self.agent_loop._stop_requested = True
-            self.tuki_display.should_stop = True
-            # Forzar el flag de ejecución a falso para permitir nueva entrada rápido
+            self.controller.stop_agent()
             self._is_running = False 
             self.add_message("system", "[bold red]Emergency Stop Triggered.[/bold red]")
         else:
             self.add_message("system", "Agent is not running.")
 
     def action_toggle_console(self) -> None:
-        """Muestra u oculta el panel de la consola."""
         console = self.query_one("#console-area")
-        console.has_class("hidden")
         if console.has_class("hidden"):
             console.remove_class("hidden")
         else:

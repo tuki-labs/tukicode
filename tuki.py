@@ -49,76 +49,33 @@ def chat(session_id: int = typer.Argument(None, help="ID of a previous session t
     if loaded_integrations:
         display.console.print(f"[dim]Loaded integrations: {', '.join(loaded_integrations)}[/dim]")
 
-    provider = config.model.provider.lower()
-    
-    if provider == "gemini":
-        try:
-            from agent.gemini_client import GeminiClient
-            client = GeminiClient(
-                model_name=config.gemini.model if not model else model,
-                temperature=config.model.temperature,
-                max_tokens=config.model.max_tokens,
-                stream=config.agent.stream,
-                api_key=config.gemini.api_key
-            )
-        except ImportError:
-            display.show_error("Gemini library not found. Run: pip install google-generativeai")
-            raise typer.Exit(1)
-    elif provider == "anthropic":
-        try:
-            from agent.anthropic_client import AnthropicClient
-            client = AnthropicClient(
-                model_name=config.anthropic.model if not model else model,
-                temperature=config.model.temperature,
-                max_tokens=config.model.max_tokens,
-                stream=config.agent.stream,
-                api_key=config.anthropic.api_key
-            )
-        except ImportError:
-            display.show_error("Anthropic library not found. Run: pip install anthropic")
-            raise typer.Exit(1)
-    elif provider == "openrouter":
-        client = OpenRouterClient(
-            model_name=config.model.name if not model else model,
-            temperature=config.model.temperature,
-            max_tokens=config.model.max_tokens,
-            stream=config.agent.stream,
-            api_key=config.openrouter.api_key
-        )
-    else: # Default to Ollama
-        client = OllamaClient(
-            model_name=config.model.name if not model else model,
-            temperature=config.model.temperature,
-            max_tokens=config.model.max_tokens,
-            stream=config.agent.stream
-        )
-        with display.show_spinner("Verifying Ollama"):
-            if not client.is_available():
-                display.show_error("Ollama is not available. Make sure it is running (ollama serve).")
-                raise typer.Exit(1)
-
     context = ConversationContext(config.model.context_window)
     base_dir = get_app_dir()
     
-    app_ui = TukiApp(config, client, tool_registry, context, session_id=session_id)
+    from core.controller import TukiController
+    # Initial controller with None client, then we switch_model to initialize it
+    app_controller = TukiController(config, None, tool_registry, context, display, session_id=session_id)
+    
+    try:
+        app_controller.switch_model(config.model.provider, model or config.model.name)
+    except Exception as e:
+        display.show_error(str(e))
+        raise typer.Exit(1)
+    
+    app_ui = TukiApp(app_controller)
     
     if session_id:
         db_path = base_dir / "data" / "history.db"
-        if not app_ui.agent_loop.load_history(str(db_path), session_id):
+        if not app_controller.agent_loop.load_history(str(db_path), session_id):
             display.show_error(f"Session ID {session_id} not found or could not be loaded.")
             raise typer.Exit(1)
             
-    # La renderización del contexto cargado se puede hacer dentro del mount de la app o aquí
-    # Para Textual, lo haremos después de iniciar o pasando los mensajes.
-    # Por ahora, iniciamos la app.
-    
     try:
         app_ui.run()
     finally:
         db_path = base_dir / "data" / "history.db"
         db_path.parent.mkdir(parents=True, exist_ok=True)
-        title = getattr(app_ui, "session_title", None)
-        app_ui.agent_loop.save_to_history(str(db_path), custom_title=title, session_id=session_id)
+        app_controller.save_session()
         print(f"\nConversation saved. Total session tokens: {context.token_count}")
 
 

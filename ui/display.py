@@ -82,11 +82,11 @@ class TukiDisplay:
     # =============================
     # 💬 STREAM IA
     # =============================
-    def stream_response(self, chunk_generator: Generator[str, None, None]) -> str:
+    async def stream_response(self, chunk_generator) -> str:
         full_response = ""
         last_thinking = ""
 
-        for chunk in chunk_generator:
+        async for chunk in chunk_generator:
             if self.should_stop:
                 self.should_stop = False
                 self.print("[bold red]Generation aborted by user.[/bold red]")
