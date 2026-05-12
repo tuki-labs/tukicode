@@ -1,13 +1,17 @@
 # -*- mode: python ; coding: utf-8 -*-
+import sys
 from PyInstaller.utils.hooks import collect_submodules
 
+hidden_imports = collect_submodules("textual")
+if sys.platform == "win32":
+    hidden_imports.append("winpty")
 
 a = Analysis(
     ['tuki.py'],
     pathex=[],
     binaries=[],
     datas=[('prompts', 'prompts')],
-    hiddenimports=collect_submodules("textual"),
+    hiddenimports=hidden_imports,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
