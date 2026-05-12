@@ -7,7 +7,7 @@ pytest-asyncio
 pyperclip
 google-generativeai
 anthropic
-textual
+textual==8.2.5
 pyte
 pywinpty; sys_platform == "win32"
 ptyprocess; sys_platform != "win32"

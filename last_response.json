@@ -1,15 +1,1 @@
-He encontrado varios archivos TypeScript en tu PC, principalmente en directorios de programas y extensiones. Sin embargo, parece que no hay archivos `.ts` en tus directorios de proyectos personales (como Desktop, Documents, etc.) o en el directorio actual.
-
-Aquí tienes algunos ejemplos de archivos `.ts` encontrados:
-
-**En extensiones de VS Code (`.antigravity`):**
-- `C:\Users\sebas\.antigravity\extensions\astro-build.astro-vscode-2.16.13-win32-x64\dist\client.d.ts`
-- `C:\Users\sebas\.antigravity\extensions\astro-build.astro-vscode-2.16.13-win32-x64\dist\types\astro-jsx.d.ts`
-
-**En Program Files (NetBeans):**
-- `C:\Program Files\Apache NetBeans\webcommon\typescript-lsp\node_modules\typescript\lib\lib.d.ts`
-- Muchos archivos de definición de TypeScript (`*.d.ts`) en la instalación de TypeScript.
-
-Si estás buscando un archivo TypeScript específico que hayas creado, podrías intentar buscar en otras ubicaciones. ¿Te gustaría que busque en algún directorio en particular? Por ejemplo, puedo buscar en `C:\Users\sebas\source` o `C:\Users\sebas\projects` si existen.
-
-También puedo realizar una búsqueda más amplia en tu directorio de usuario, excluyendo carpetas como `node_modules` y `.git` para encontrar archivos `.ts` que no sean de sistema. ¿Quieres que haga eso?
+¡Hola! ¿En qué puedo ayudarte hoy? 😊

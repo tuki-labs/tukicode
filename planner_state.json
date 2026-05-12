@@ -1,0 +1,11 @@
+{
+  "status": "completed",
+  "plan": [
+    {
+      "id": 1,
+      "description": "No specific task was provided. Please provide a programming request or task to plan for.",
+      "status": "completed"
+    }
+  ],
+  "current_step": 1
+}
