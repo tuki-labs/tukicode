@@ -6,15 +6,39 @@ from datetime import datetime
 from .base import tool, ToolResult, RiskLevel
 from .registry import registry
 
+# ── tuki_native: Rust-accelerated utilities ─────────────────────────────────
+try:
+    import tuki_native as _native
+    _NATIVE = True
+except ImportError:
+    _native = None
+    _NATIVE = False
+
 @tool("search_code", "Searches for a pattern in files", RiskLevel.MEDIUM)
 def search_code(query: str, path: str, file_extensions: list = None, case_sensitive: bool = False, context_lines: int = 2) -> ToolResult:
     p = pathlib.Path(path)
     if not p.exists():
-        return ToolResult(success=False, output="", error=f"Ruta '{path}' no existe.")
-    
-    results = []
-    
-    # Intentar con ripgrep (rg) primero
+        return ToolResult(success=False, output="", error=f"Path '{path}' does not exist.")
+
+    # Strategy 1: Rust native (always available, no external dependency)
+    if _NATIVE:
+        try:
+            results = _native.search_code(
+                query, str(p),
+                file_extensions=file_extensions,
+                case_sensitive=case_sensitive,
+                context_lines=context_lines,
+                max_results=50,
+            )
+            if results is not None:
+                return ToolResult(
+                    success=True,
+                    output="\n".join(results) if results else "No matches found."
+                )
+        except Exception:
+            pass  # fall through to ripgrep
+
+    # Strategy 2: ripgrep (if available in PATH)
     try:
         rg_cmd = ["rg", "-n"]
         if not case_sensitive:
@@ -25,24 +49,24 @@ def search_code(query: str, path: str, file_extensions: list = None, case_sensit
             for ext in file_extensions:
                 rg_cmd.extend(["-g", f"*.{ext.lstrip('.')}"])
         rg_cmd.extend([query, str(p)])
-        
         proc = subprocess.run(rg_cmd, capture_output=True, text=True, timeout=10, encoding="utf-8")
-        if proc.returncode in [0, 1]:  # 0: matches found, 1: no matches
+        if proc.returncode in [0, 1]:
             out = proc.stdout.strip()
             if out:
                 lines = out.splitlines()
                 return ToolResult(success=True, output="\n".join(lines[:50]))
-            return ToolResult(success=True, output="No se encontraron coincidencias.")
+            return ToolResult(success=True, output="No matches found.")
     except Exception:
-        pass # Fallback a Python
-        
-    # Fallback Python puro
+        pass
+
+    # Strategy 3: Pure Python fallback
     regex_flags = 0 if case_sensitive else re.IGNORECASE
     try:
         pattern = re.compile(query, regex_flags)
     except re.error as e:
         return ToolResult(success=False, output="", error=f"Invalid regex: {str(e)}")
-        
+
+    results = []
     for file_path in p.rglob("*"):
         if not file_path.is_file():
             continue
@@ -50,7 +74,6 @@ def search_code(query: str, path: str, file_extensions: list = None, case_sensit
             ext = file_path.suffix.lstrip(".")
             if ext not in file_extensions and file_path.suffix not in file_extensions:
                 continue
-        
         try:
             lines = file_path.read_text(encoding="utf-8", errors="ignore").splitlines()
             for i, line in enumerate(lines):
@@ -65,9 +88,9 @@ def search_code(query: str, path: str, file_extensions: list = None, case_sensit
             continue
         if len(results) >= 50:
             break
-            
+
     if not results:
-        return ToolResult(success=True, output="No se encontraron coincidencias.")
+        return ToolResult(success=True, output="No matches found.")
     return ToolResult(success=True, output="\n".join(results[:50]))
 
 @tool("find_files", "Searches for files by glob pattern", RiskLevel.MEDIUM)

@@ -13,3 +13,9 @@ scratch/
 last_response.json
 
 course-management-api/
+
+# Rust build artifacts
+tuki_native/target/
+tuki_native/Cargo.lock
+*.pyd
+*.so

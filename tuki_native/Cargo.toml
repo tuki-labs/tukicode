@@ -1,0 +1,22 @@
+[package]
+name = "tuki_native"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "tuki_native"
+crate-type = ["cdylib"]
+
+[dependencies]
+pyo3 = { version = "0.24", features = ["extension-module", "abi3-py310"] }
+walkdir = "2"
+ignore = "0.4"
+regex = "1"
+rayon = "1"
+anyhow = "1"
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = 3
+strip = true

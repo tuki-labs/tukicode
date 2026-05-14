@@ -4,6 +4,14 @@ import pathlib
 from .base import tool, ToolResult, RiskLevel
 from .registry import registry
 
+# ── tuki_native: Rust-accelerated utilities ─────────────────────────────────
+try:
+    import tuki_native as _native
+    _NATIVE = True
+except ImportError:
+    _native = None
+    _NATIVE = False
+
 @tool("read_file", "Reads the content of a file", RiskLevel.MEDIUM)
 def read_file(path: str) -> ToolResult:
     p = pathlib.Path(path).expanduser().resolve()
@@ -101,7 +109,6 @@ def delete_directory(path: str) -> ToolResult:
 
 @tool("get_project_tree", "Returns the folder tree. Automatically ignores heavy folders like node_modules.", RiskLevel.MEDIUM)
 def get_project_tree(path: str, max_depth: int = 4, ignore: list = None) -> ToolResult:
-    # Asegurar tipos
     try:
         max_depth = int(max_depth)
     except:
@@ -109,17 +116,22 @@ def get_project_tree(path: str, max_depth: int = 4, ignore: list = None) -> Tool
     p = pathlib.Path(path).expanduser().resolve()
     if not p.exists() or not p.is_dir():
         return ToolResult(success=False, output="", error=f"Directory '{path}' not found.")
-    
-    # Default ignore list for performance
+
+    if _NATIVE:
+        try:
+            result = _native.get_project_tree(str(p), max_depth, list(ignore) if ignore else None)
+            return ToolResult(success=True, output=result)
+        except Exception as e:
+            pass  # fall through to Python impl
+
+    # ── Pure Python fallback ────────────────────────────────────
     default_ignore = {
-        "node_modules", ".git", "__pycache__", "venv", ".venv", 
+        "node_modules", ".git", "__pycache__", "venv", ".venv",
         "dist", "build", "target", ".expo", ".next", "out",
         "android", "ios", "Pods"
     }
-    
     ignore_set = set(ignore) if ignore else set()
     ignore_set.update(default_ignore)
-    
     tree_lines = []
 
     def walk(directory, prefix="", depth=0):
@@ -128,12 +140,9 @@ def get_project_tree(path: str, max_depth: int = 4, ignore: list = None) -> Tool
         try:
             items = sorted(directory.iterdir(), key=lambda x: (not x.is_dir(), x.name.lower()))
             items = [item for item in items if item.name not in ignore_set]
-            
-            # Si hay demasiados items, avisar
             if len(items) > 100:
                 tree_lines.append(f"{prefix}└── [Too many items ({len(items)}), consider a more specific path]")
                 return
-
             for index, item in enumerate(items):
                 is_last = (index == len(items) - 1)
                 connector = "└── " if is_last else "├── "
@@ -145,7 +154,7 @@ def get_project_tree(path: str, max_depth: int = 4, ignore: list = None) -> Tool
             tree_lines.append(f"{prefix}└── [Access denied]")
         except Exception as e:
             tree_lines.append(f"{prefix}└── [Error: {str(e)}]")
-    
+
     tree_lines.append(p.name + "/")
     walk(p)
     return ToolResult(success=True, output="\n".join(tree_lines))
