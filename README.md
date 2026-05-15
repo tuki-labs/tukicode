@@ -5,18 +5,18 @@
   <h3>Stable Release v1.3.3</h3>
   <p>
     <a href="https://github.com/tuki-labs/tukicode/stargazers">
-      <img src="https://img.shields.io/github/stars/tuki-labs/tukicode?style=flat&color=2997ff&labelColor=0a0a0a" alt="Stars"/>
+      <img src="https://img.shields.io/github/stars/tuki-labs/tukicode?style=for-the-badge&logo=github&logoColor=white&color=2997ff&labelColor=0d0d0d" alt="Stars"/>
     </a>
     <a href="https://github.com/tuki-labs/tukicode/releases/latest">
-      <img src="https://img.shields.io/badge/version-v1.3.3-2997ff?style=flat&labelColor=0a0a0a" alt="Version"/>
+      <img src="https://img.shields.io/github/v/release/tuki-labs/tukicode?style=for-the-badge&logo=rocket&logoColor=white&color=2997ff&labelColor=0d0d0d&label=release" alt="Release"/>
     </a>
     <a href="https://github.com/tuki-labs/tukicode/blob/main/LICENSE">
-      <img src="https://img.shields.io/badge/license-MIT-2997ff?style=flat&labelColor=0a0a0a" alt="License"/>
+      <img src="https://img.shields.io/badge/license-MIT-2997ff?style=for-the-badge&logo=opensourceinitiative&logoColor=white&labelColor=0d0d0d" alt="License"/>
     </a>
-    <a href="https://www.python.org/">
-      <img src="https://img.shields.io/badge/python-3.10+-2997ff?style=flat&labelColor=0a0a0a" alt="Python"/>
-    </a>
-    <img src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-2997ff?style=flat&labelColor=0a0a0a" alt="Platform"/>
+    <br/>
+    <img src="https://img.shields.io/badge/python-3.10+-3776AB?style=for-the-badge&logo=python&logoColor=white&labelColor=0d0d0d" alt="Python"/>
+    <img src="https://img.shields.io/badge/rust-engine-CE422B?style=for-the-badge&logo=rust&logoColor=white&labelColor=0d0d0d" alt="Rust"/>
+    <img src="https://img.shields.io/badge/platform-win%20%7C%20mac%20%7C%20linux-555?style=for-the-badge&logo=linux&logoColor=white&labelColor=0d0d0d" alt="Platform"/>
   </p>
 </div>
 
