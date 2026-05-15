@@ -59,7 +59,7 @@ Tanto macOS como Linux instalan `tuki` en `~/.local/bin` y actualizan tu perfil 
 ### Desde el codigo fuente (Cualquier SO)
 
 ```bash
-git clone https://github.com/sb4ss/tukicode.git
+git clone https://github.com/tuki-labs/tukicode.git
 cd tukicode
 pip install -r requirements.txt
 python tuki.py chat

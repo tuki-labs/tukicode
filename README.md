@@ -59,7 +59,7 @@ Both macOS and Linux install `tuki` to `~/.local/bin` and update your shell prof
 ### From source (any OS)
 
 ```bash
-git clone https://github.com/sb4ss/tukicode.git
+git clone https://github.com/tuki-labs/tukicode.git
 cd tukicode
 pip install -r requirements.txt
 python tuki.py chat
