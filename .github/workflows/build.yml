@@ -18,7 +18,7 @@ jobs:
       matrix:
         include:
           - os: windows-latest
-            artifact_name: tuki.exe
+            artifact_name: tuki-windows.exe
             asset_name: tuki-windows.exe
           - os: macos-latest
             artifact_name: tuki-macos
@@ -81,7 +81,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            dist/tuki-windows.exe/tuki.exe
+            dist/tuki-windows.exe/tuki-windows.exe
             dist/tuki-macos/tuki-macos
             dist/tuki-linux/tuki-linux
         env:
