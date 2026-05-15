@@ -20,7 +20,7 @@
   </p>
 </div>
 
-**TukiCode** is an open-source CLI coding agent built in Python. It runs locally with Ollama or in the cloud with OpenRouter, Gemini, and Anthropic. It features a fully asynchronous architecture designed for high performance and responsiveness.
+**TukiCode** is an open-source CLI coding agent built in Python & Rust. It runs locally with Ollama or in the cloud with OpenRouter, Gemini, and Anthropic. It features a fully asynchronous architecture designed for high performance and responsiveness.
 
 ---
 
