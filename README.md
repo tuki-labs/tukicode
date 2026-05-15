@@ -3,6 +3,21 @@
 <div align="center">
   <img src="./media/tukilogo.png" alt="TukiCode Logo" width="100"/>
   <h3>Stable Release v1.3.3</h3>
+  <p>
+    <a href="https://github.com/tuki-labs/tukicode/stargazers">
+      <img src="https://img.shields.io/github/stars/tuki-labs/tukicode?style=flat&color=2997ff&labelColor=0a0a0a" alt="Stars"/>
+    </a>
+    <a href="https://github.com/tuki-labs/tukicode/releases/latest">
+      <img src="https://img.shields.io/badge/version-v1.3.3-2997ff?style=flat&labelColor=0a0a0a" alt="Version"/>
+    </a>
+    <a href="https://github.com/tuki-labs/tukicode/blob/main/LICENSE">
+      <img src="https://img.shields.io/badge/license-MIT-2997ff?style=flat&labelColor=0a0a0a" alt="License"/>
+    </a>
+    <a href="https://www.python.org/">
+      <img src="https://img.shields.io/badge/python-3.10+-2997ff?style=flat&labelColor=0a0a0a" alt="Python"/>
+    </a>
+    <img src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-2997ff?style=flat&labelColor=0a0a0a" alt="Platform"/>
+  </p>
 </div>
 
 **TukiCode** is an open-source CLI coding agent built in Python. It runs locally with Ollama or in the cloud with OpenRouter, Gemini, and Anthropic. It features a fully asynchronous architecture designed for high performance and responsiveness.
