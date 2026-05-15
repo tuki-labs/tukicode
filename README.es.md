@@ -2,7 +2,7 @@
 
 <div align="center">
   <img src="./media/tukilogo.png" alt="TukiCode Logo" width="100"/>
-  <h3>Stable Release v1.3.1</h3>
+  <h3>Stable Release v1.3.3</h3>
 </div>
 
 **TukiCode** es un agente de programacion CLI de codigo abierto construido en Python. Funciona localmente con Ollama o en la nube con OpenRouter, Gemini y Anthropic. Cuenta con una arquitectura completamente asincrona diseñada para un alto rendimiento y capacidad de respuesta.
@@ -11,6 +11,12 @@
 
 ## Novedades
 
+- **Motor Nativo en Rust (`tuki_native`)** - Reemplaza las operaciones críticas de Python (sistema de archivos, búsqueda de código, E/S de terminal) por bindings de Rust sin costo adicional para una velocidad máxima.
+- **Ejecución Paralela de Herramientas** - El agente ahora puede invocar y procesar múltiples herramientas simultáneamente en un solo turno, reduciendo drásticamente la latencia en tareas complejas.
+- **Prompt Caching Integrado** - Soporte nativo para caché de contexto con Anthropic, disminuyendo el costo de tokens y mejorando radicalmente el tiempo de respuesta (TTFT).
+- **Smart Background Shell** - Los comandos que tardan demasiado ya no fallan por timeout; se relegan transparentemente a un proceso en segundo plano (con monitoreo Anti-Loop inteligente) mientras la interfaz sigue mostrando su progreso en vivo.
+- **Multiplataforma Auténtica** - El motor de prompts detecta dinámicamente tu sistema operativo (Windows, macOS, Linux) para adaptar los comandos de shell y las rutas de forma automática.
+- **Bucle ReAct Optimizado** - La compresión de memoria de contexto ahora es no bloqueante (asíncrona), evitando que la interfaz se congele. Se previene la inflación del historial truncando salidas largas de herramientas, y el mecanismo anti-loop es más estricto para ahorrar llamadas a la API.
 - **Arquitectura Asincrona** - Todos los clientes LLM utilizan metodos asincronos nativos (httpx, asyncio) para ejecucion no bloqueante y transmision mas rapida.
 - **Separacion MVC** - La logica de negocio, el cambio de modelos de IA y las interacciones con la base de datos estan aisladas en un Controlador dedicado, completamente separado de la capa de interfaz de usuario.
 - **Planificador Estructurado** - El planificador del agente impone estrictamente salidas estructuradas en JSON para generar planes de implementacion precisos paso a paso.
@@ -156,10 +162,58 @@ El agente recibe tu mensaje y entra directamente al loop ReAct. Piensa, llama he
 
 ---
 
+## Motor Nativo en Rust (`tuki_native`)
+
+`tuki_native` es una extensión nativa escrita en Rust que se compila y se integra directamente en TukiCode (que está escrito en Python) utilizando una librería llamada PyO3.
+
+En términos sencillos: le permite a TukiCode ejecutar sus tareas más pesadas utilizando la potencia y la velocidad extrema de Rust, mientras mantiene la facilidad de uso y la arquitectura asíncrona de Python para la lógica de negocio y la IA.
+
+### ¿Por qué se creó?
+
+Python es excelente para orquestar agentes de IA y hacer peticiones de red asíncronas, pero es lento para tareas intensivas de CPU y de entrada/salida (I/O). Antes de `tuki_native`, operaciones como:
+
+- Leer y buscar dentro de miles de archivos de código en un proyecto grande.
+- Construir el árbol de directorios de un repositorio completo.
+- Limpiar y parsear cientos de líneas de texto de una terminal (códigos ANSI, colores, movimientos del cursor).
+
+...bloqueaban el hilo principal de Python o tardaban demasiado, haciendo que TukiCode se sintiera un poco lento en repositorios grandes. `tuki_native` elimina estos "cuellos de botella" proporcionando bindings sin costo (zero-cost bindings), haciendo que el agente responda casi al instante en estas operaciones críticas.
+
+### ¿Cómo está estructurado por dentro?
+
+El código fuente en `tuki_native/src/` está dividido en módulos sumamente optimizados:
+
+#### 1. Módulo de Sistema de Archivos (`fs.rs`)
+Se encarga de recorrer el disco duro de manera ultra rápida utilizando la librería `walkdir` de Rust.
+- **`get_project_tree`**: Genera el mapa/árbol del proyecto instantáneamente. Filtra automáticamente carpetas pesadas e inútiles para el contexto (como `node_modules`, `.git`, `venv`, `target`, etc.).
+- **`find_files`**: Encuentra archivos por coincidencia de glob o extensión en milisegundos, saltando carpetas ignoradas a nivel de sistema operativo para no gastar recursos.
+- **`list_dir`**: Lista contenidos de directorios con muchísima mayor eficiencia que el `os.listdir` de Python.
+
+#### 2. Módulo de Búsqueda (`search.rs`)
+- **`search_code`**: Reemplaza las lentas búsquedas con expresiones regulares de Python puro. Utiliza el motor de expresiones regulares de Rust (`regex`) para buscar texto o patrones dentro del código del usuario. Es capaz de rastrear de forma segura, respetando límites y filtrando por extensiones, devolviendo fragmentos con líneas de contexto.
+
+#### 3. Módulo de Terminal/PTY (`pty.rs`)
+La terminal interactiva de TukiCode genera muchísima "basura visual" (códigos de control, saltos de carro, colores ANSI). Limpiar esto en Python usando `re.sub()` en cada ejecución del loop del agente era muy costoso.
+- **Limpieza ultra rápida**: Contiene funciones como `strip_control_sequences`, `strip_ansi` y `truncate_output`.
+- **Optimización de Memoria**: Utiliza `OnceLock` para pre-compilar las expresiones regulares en memoria (en caché) una sola vez cuando el programa inicia. Cuando Python llama a estas funciones, el costo de CPU es prácticamente cero.
+
+---
+
+## Bucle ReAct Optimizado
+
+TukiCode incorpora un bucle de razonamiento asíncrono altamente optimizado para evitar cuellos de botella y congelamientos de la interfaz, especialmente en proyectos grandes:
+
+- **Compresión de Memoria Asíncrona:** Cuando el historial de la conversación se llena, el agente lo resume de forma 100% no bloqueante, mostrando un indicador visual sin detener la aplicación.
+- **Prevención de Inflamación de Contexto (Context Bloat):** Las salidas inmensas de herramientas (como leer miles de líneas o listar directorios gigantes) se truncan automáticamente a un tamaño manejable antes de guardarse en el historial del LLM. Esto mantiene el "Time To First Token" (TTFT) extremadamente bajo y reduce costos.
+- **Estimación Realista de Tokens:** El motor utiliza algoritmos ajustados para código fuente (donde abundan símbolos y palabras clave) para calcular los tokens reales en el contexto, evitando errores de límite de tokens.
+- **Anti-Loop Estricto:** Si el modelo de IA comete un error y entra en un bucle ciego repitiendo la misma herramienta fallida, el motor lo interrumpe al segundo intento fallido, inyectando un mensaje correctivo y ahorrando costosas llamadas a la API.
+
+---
+
 ## Resumen de Arquitectura
 
 ```
 tuki.py              <- Punto de entrada CLI (Typer)
+tuki_native/         <- Extension de alto rendimiento en Rust (PyO3)
 core/
   controller.py      <- TukiController (Logica de negocio y gestion de LLM)
 agent/

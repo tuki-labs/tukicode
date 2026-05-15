@@ -93,12 +93,21 @@ def search_code(query: str, path: str, file_extensions: list = None, case_sensit
         return ToolResult(success=True, output="No matches found.")
     return ToolResult(success=True, output="\n".join(results[:50]))
 
+# Using Rust for file operations in search_tools
 @tool("find_files", "Searches for files by glob pattern", RiskLevel.MEDIUM)
 def find_files(pattern: str, root: str, max_depth: int = 5, ignore: list = None) -> ToolResult:
     p = pathlib.Path(root)
     if not p.exists():
         return ToolResult(success=False, output="", error="Root does not exist.")
     
+    if _NATIVE:
+        try:
+            # tuki_native.find_files returns a list of matching file paths
+            results = _native.find_files(pattern, str(p), max_depth, list(ignore) if ignore else None)
+            return ToolResult(success=True, output="\n".join(results) if results else "No results found.")
+        except Exception:
+            pass  # fall through to pure Python implementation
+
     ignore_set = set(ignore) if ignore else set()
     results = []
     
@@ -121,6 +130,14 @@ def list_dir(path: str, recursive: bool = False, show_hidden: bool = False) -> T
     if not p.exists() or not p.is_dir():
         return ToolResult(success=False, output="", error="Directorio no existe.")
     
+    if _NATIVE:
+        try:
+            # tuki_native.list_dir returns a pre-formatted string
+            result = _native.list_dir(str(p), recursive, show_hidden)
+            return ToolResult(success=True, output=result)
+        except Exception:
+            pass  # fall through to pure Python implementation
+
     lines = []
     items = p.rglob("*") if recursive else p.iterdir()
     for item in items:

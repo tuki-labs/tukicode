@@ -307,58 +307,54 @@ def run_shell(command: str, cwd: str = None, timeout_seconds: Union[int, str] = 
     env["CI"] = "false"
     env["PYTHONUNBUFFERED"] = "1"
 
-    # ── Background (PTY) mode ────────────────────────────────────────────────
-    if background:
-        try:
-            proc = _get_pty_process(command, cwd, env, dims=(120, 40))
-            pid = proc.pid
+    # ── Universal Execution Mode (PTY) ───────────────────────────────────────
+    try:
+        proc = _get_pty_process(command, cwd, env, dims=(120, 40))
+        pid = proc.pid
+        start_time = time.time()
 
-            _bg_processes[pid] = {
-                "process": proc,
-                "command": command,
-                "start_time": time.time(),
-                "cwd": cwd or os.getcwd(),
-                "stdout": b"",
-                "stderr": b"",
-                "is_pty": True,
-            }
+        _bg_processes[pid] = {
+            "process": proc,
+            "command": command,
+            "start_time": start_time,
+            "cwd": cwd or os.getcwd(),
+            "stdout": b"",
+            "stderr": b"",
+            "is_pty": True,
+        }
 
-            threading.Thread(target=_read_pty, args=(proc, pid, "stdout"), daemon=True).start()
+        threading.Thread(target=_read_pty, args=(proc, pid, "stdout"), daemon=True).start()
+
+        if background:
+            return ToolResult(
+                success=True,
+                output=f"Command started directly in background (PID {pid}). Capturing live output. Use get_process_output to monitor.",
+                metadata={"pid": pid, "background": True, "pty": True},
+            )
+        else:
+            # Wait up to timeout_seconds
+            while proc.isalive():
+                if time.time() - start_time > timeout_seconds:
+                    return ToolResult(
+                        success=True,
+                        output=f"Command exceeded {timeout_seconds}s timeout.\nIt has been automatically moved to the background (PID {pid}).\nOutput so far:\n{truncate_output(_bg_processes[pid]['stdout'])}\n\nUse 'get_process_output' to continue monitoring its progress.",
+                        metadata={"pid": pid, "background": True, "pty": True, "timed_out_moved_to_bg": True},
+                    )
+                time.sleep(0.1)
+            
+            # Command finished within timeout
+            exec_time = int((time.time() - start_time) * 1000)
+            output = truncate_output(_bg_processes[pid]["stdout"]).strip()
+            del _bg_processes[pid]
 
             return ToolResult(
                 success=True,
-                output=f"Interactive Terminal started (PID {pid}, 120x40). Capturing live output...",
-                metadata={"pid": pid, "background": True, "pty": True},
+                output=output,
+                metadata={"command": command, "cwd": cwd, "execution_time_ms": exec_time},
             )
-        except Exception as e:
-            return ToolResult(success=False, output="", error=f"Error starting PTY: {str(e)}")
 
-    # ── Quick (subprocess) mode ──────────────────────────────────────────────
-    start_time = time.time()
-    try:
-        proc = subprocess.run(
-            _shell_cmd(command),
-            cwd=cwd,
-            capture_output=True,
-            text=True,
-            timeout=timeout_seconds,
-            encoding="utf-8",
-            errors="replace",
-            env=env,
-        )
-        exec_time = int((time.time() - start_time) * 1000)
-        output = truncate_output(proc.stdout)
-        if proc.stderr:
-            output += "\n--- STDERR ---\n" + truncate_output(proc.stderr)
-        return ToolResult(
-            success=proc.returncode == 0,
-            output=output.strip(),
-            metadata={"exit_code": proc.returncode, "command": command, "cwd": cwd, "execution_time_ms": exec_time},
-        )
-    except subprocess.TimeoutExpired:
-        return ToolResult(success=False, output="", error="Timeout. Use background=True for interactive servers.")
     except Exception as e:
-        return ToolResult(success=False, output="", error=f"Error: {str(e)}")
+        return ToolResult(success=False, output="", error=f"Error starting process: {str(e)}")
 
 
 @tool("get_process_output", "Reads output from a background process.", RiskLevel.MEDIUM)

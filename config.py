@@ -23,7 +23,6 @@ class ModelConfig:
 # Config for Agent autonomy
 @dataclass
 class AgentConfig:
-    risk_level: str = "medium"
     autonomy_level: str = "low"
     language: str = "es"
     think_aloud: bool = True
@@ -164,7 +163,6 @@ max_tokens = {config.model.max_tokens}
 context_window = {config.model.context_window}
 
 [agent]
-risk_level = "{config.agent.risk_level}"
 autonomy_level = "{config.agent.autonomy_level}"
 language = "{config.agent.language}"
 think_aloud = {"true" if config.agent.think_aloud else "false"}

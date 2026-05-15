@@ -15,7 +15,10 @@ class AnthropicClient:
         self.prompt_tokens = 0
         self.completion_tokens = 0
         self.total_tokens = 0
-        self._client = anthropic.AsyncAnthropic(api_key=api_key) if api_key else None
+        self._client = anthropic.AsyncAnthropic(
+            api_key=api_key,
+            default_headers={"anthropic-beta": "prompt-caching-2024-07-31"}
+        ) if api_key else None
 
     @property
     def supports_tool_calling(self) -> bool:
@@ -36,7 +39,15 @@ class AnthropicClient:
             elif role == "assistant":
                 anthropic_messages.append({"role": "assistant", "content": content})
         
-        return system_instruction.strip(), anthropic_messages
+        system = [
+            {
+                "type": "text",
+                "text": system_instruction.strip(),
+                "cache_control": {"type": "ephemeral"}
+            }
+        ]
+        
+        return system, anthropic_messages
 
     async def chat(self, messages: List[dict], tools: List[dict] = None, response_format: dict = None) -> dict:
         if not self._client:

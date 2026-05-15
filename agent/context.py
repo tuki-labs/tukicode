@@ -4,7 +4,7 @@ from typing import List, Dict, Any
 from .prompts import build_compression_prompt
 
 def estimate_tokens(text: str) -> int:
-    return len(text) // 4
+    return len(text) // 3
 
 class ConversationContext:
     def __init__(self, context_window: int):
@@ -34,7 +34,7 @@ class ConversationContext:
     def usage_percent(self) -> float:
         return self.token_count / self.context_window if self.context_window > 0 else 0.0
 
-    def compress_if_needed(self, llm_client: Any):
+    async def compress_if_needed(self, llm_client: Any, display: Any = None):
         if self.usage_percent <= 0.80:
             return
             
@@ -48,11 +48,32 @@ class ConversationContext:
         prompt = build_compression_prompt(to_compress)
         
         try:
-            summary = llm_client.chat([{"role": "user", "content": prompt}])
+            if display:
+                ctx_manager = display.show_spinner("Compressing memory to prevent context bloat...")
+                ctx_manager.__enter__()
+            
+            response = await llm_client.chat([{"role": "user", "content": prompt}])
+            
+            if display:
+                ctx_manager.__exit__(None, None, None)
+
+            # Extract summary from dict
+            summary = ""
+            if isinstance(response, str):
+                summary = response
+            elif isinstance(response, dict):
+                if "message" in response:
+                    summary = response["message"].get("content", "") or ""
+                elif "choices" in response and response["choices"]:
+                    summary = response["choices"][0].get("message", {}).get("content", "") or ""
+
             compressed_msg = {"role": "system", "content": "[CONTEXT SUMMARY]:\n" + summary}
             self.messages = [sys_msg, compressed_msg] + keep
             
             # Recalculate tokens
             self.token_count = sum(estimate_tokens(m["content"]) for m in self.messages)
         except Exception as e:
+            if display:
+                try: ctx_manager.__exit__(None, None, None) 
+                except: pass
             print(f"Error compressing context: {e}")

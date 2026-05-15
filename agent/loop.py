@@ -14,6 +14,7 @@ class AgentLoop:
         self.context = context
         self.display = display
         self._stop_requested = False
+        self._cached_native_tools = None
 
     def start_session(self):
         from .prompts import build_system_prompt
@@ -22,6 +23,8 @@ class AgentLoop:
         self.context.add_message("system", sys_prompt)
 
     def _get_native_tools(self):
+        if self._cached_native_tools is not None:
+            return self._cached_native_tools
         native_tools = []
         for t in self.tool_registry.get_schema():
             properties = {}
@@ -39,6 +42,7 @@ class AgentLoop:
                     }
                 }
             })
+        self._cached_native_tools = native_tools
         return native_tools
 
     async def run_turn(self, user_message: str) -> str:
@@ -50,7 +54,7 @@ class AgentLoop:
         repeated_count = 0
         MAX_ITERATIONS = 20
         NUDGE_AT = 8        # iteraciones antes de recordarle que termine
-        MAX_REPEATED = 3    # veces que puede repetir la misma tool antes de cortar
+        MAX_REPEATED = 2    # veces que puede repetir la misma tool antes de cortar
 
         try:
             for iteration in range(MAX_ITERATIONS):
@@ -58,7 +62,7 @@ class AgentLoop:
                     self._stop_requested = False
                     return "Agent execution stopped by user."
 
-                self.context.compress_if_needed(self.llm_client)
+                await self.context.compress_if_needed(self.llm_client, self.display)
                 messages = self.context.get_messages()
                 native_tools = self._get_native_tools()
 
@@ -118,30 +122,8 @@ class AgentLoop:
                 use_native = getattr(self.llm_client, "supports_tool_calling", False)
                 parsed = parse_response(full_response, use_native=use_native)
 
-                if isinstance(parsed, ToolCall):
-                    # ── Anti-loop: detectar tool calls repetidas ──
-                    tool_signature = f"{parsed.tool_name}:{json.dumps(parsed.args, sort_keys=True)}"
-                    if tool_signature in last_tool_calls[-3:]:
-                        repeated_count += 1
-                        if repeated_count >= MAX_REPEATED:
-                            # Inyectar mensaje de error y forzar respuesta final
-                            self.context.add_message("tool",
-                                f"ERROR: Tool '{parsed.tool_name}' has been called with the same arguments "
-                                f"{MAX_REPEATED} times in a row. Stop repeating and provide your FINAL RESPONSE.",
-                                tool_call_id=parsed.call_id
-                            )
-                            self.display.show_error(f"Loop detected: '{parsed.tool_name}' repeated {MAX_REPEATED} times. Forcing final response.")
-                            repeated_count = 0
-                            last_tool_calls = []
-                            continue
-                    else:
-                        repeated_count = 0
-
-                    last_tool_calls.append(tool_signature)
-                    if len(last_tool_calls) > 10:
-                        last_tool_calls.pop(0)
-
-                    # Guardar en contexto
+                if isinstance(parsed, list) and len(parsed) > 0 and all(isinstance(p, ToolCall) for p in parsed):
+                    # Guardar en contexto la respuesta del assistant UNA VEZ
                     if isinstance(full_response, dict):
                         msg_obj = {}
                         if "choices" in full_response:
@@ -152,71 +134,111 @@ class AgentLoop:
                     else:
                         self.context.add_message("assistant", str(full_response))
 
-                    # Confirmación por riesgo
-                    tool_item = self.tool_registry._tools.get(parsed.tool_name)
-                    if tool_item:
-                        from tools.base import BaseTool
-                        tool_risk = tool_item.risk_level if isinstance(tool_item, BaseTool) else getattr(tool_item, "__tool_risk__")
-                        autonomy = self.config.agent.autonomy_level.lower()
-                        should_prompt = True
+                    has_loop_error = False
 
-                        if autonomy == "high":
-                            if self._turn_confirmed:
-                                should_prompt = False
-                        elif autonomy == "medium":
-                            if tool_risk.value < RiskLevel.HIGH.value:
-                                should_prompt = False
+                    for parsed_tool in parsed:
+                        if has_loop_error:
+                            break # skip remaining tools if we detected a loop
 
-                        if should_prompt and tool_risk.value >= RiskLevel.MEDIUM.value:
-                            details = ""
-                            if "command" in parsed.args: details = f"Command: [yellow]{parsed.args['command']}[/yellow]"
-                            elif "path" in parsed.args: details = f"Path: [yellow]{parsed.args['path']}[/yellow]"
-                            elif "content" in parsed.args:
-                                snippet = parsed.args['content'][:50] + "..." if len(parsed.args['content']) > 50 else parsed.args['content']
-                                details = f"Content: [yellow]{snippet}[/yellow]"
-
-                            msg = f"[bold yellow]Security Check[/bold yellow]\nAction: [cyan]{parsed.tool_name}[/cyan]\nRisk: [yellow]{tool_risk.name}[/yellow]\n{details}\n¿Permitir ejecución?"
-
-                            if hasattr(self.display, "confirm_async"):
-                                confirmed = await self.display.confirm_async(msg)
+                        # ── Anti-loop: detectar tool calls repetidas ──
+                        if parsed_tool.tool_name not in ["get_process_output", "list_processes"]:
+                            tool_signature = f"{parsed_tool.tool_name}:{json.dumps(parsed_tool.args, sort_keys=True)}"
+                            if tool_signature in last_tool_calls[-3:]:
+                                repeated_count += 1
+                                if repeated_count >= MAX_REPEATED:
+                                    # Inyectar mensaje de error y forzar respuesta final
+                                    self.context.add_message("tool",
+                                        f"ERROR: Tool '{parsed_tool.tool_name}' has been called with the same arguments "
+                                        f"{MAX_REPEATED} times in a row. Stop repeating and provide your FINAL RESPONSE.",
+                                        tool_call_id=parsed_tool.call_id
+                                    )
+                                    self.display.show_error(f"Loop detected: '{parsed_tool.tool_name}' repeated {MAX_REPEATED} times. Forcing final response.")
+                                    repeated_count = 0
+                                    last_tool_calls = []
+                                    has_loop_error = True
+                                    continue
                             else:
-                                confirmed = self.display.confirm(msg)
+                                repeated_count = 0
 
-                            if not confirmed:
-                                self.context.add_message("tool", "Action cancelled by user.", tool_call_id=parsed.call_id)
-                                return "Action cancelled by user. What would you like to do next?"
+                            last_tool_calls.append(tool_signature)
+                            if len(last_tool_calls) > 10:
+                                last_tool_calls.pop(0)
 
-                            self._turn_confirmed = True
+                        # Confirmación por riesgo
+                        tool_item = self.tool_registry._tools.get(parsed_tool.tool_name)
+                        if tool_item:
+                            from tools.base import BaseTool
+                            tool_risk = tool_item.risk_level if isinstance(tool_item, BaseTool) else getattr(tool_item, "__tool_risk__")
+                            autonomy = self.config.agent.autonomy_level.lower()
+                            should_prompt = True
 
-                    # Ejecutar tool con timeout
-                    details = ""
-                    if "command" in parsed.args: details = parsed.args["command"]
-                    elif "path" in parsed.args: details = parsed.args["path"]
-                    if len(details) > 60: details = details[:57] + "..."
+                            if autonomy == "high":
+                                if self._turn_confirmed:
+                                    should_prompt = False
+                            elif autonomy == "medium":
+                                if tool_risk.value < RiskLevel.HIGH.value:
+                                    should_prompt = False
 
-                    try:
-                        with self.display.show_spinner(f"Executing {parsed.tool_name}", details=details):
-                            loop = asyncio.get_event_loop()
-                            result = await asyncio.wait_for(
-                                loop.run_in_executor(None, self.tool_registry.execute, parsed.tool_name, parsed.args, self.config.agent.risk_level),
-                                timeout=30.0  # tools síncronas tienen 30s máximo
-                            )
-                    except asyncio.TimeoutError:
-                        result_str = f"ERROR: Tool '{parsed.tool_name}' timed out after 30 seconds. Use background=True for long-running processes."
-                        self.display.show_error(f"Tool '{parsed.tool_name}' timed out.")
-                        self.context.add_message("tool", result_str, tool_call_id=parsed.call_id)
+                            if should_prompt and tool_risk.value >= RiskLevel.MEDIUM.value:
+                                details = ""
+                                if "command" in parsed_tool.args: details = f"Command: [yellow]{parsed_tool.args['command']}[/yellow]"
+                                elif "path" in parsed_tool.args: details = f"Path: [yellow]{parsed_tool.args['path']}[/yellow]"
+                                elif "content" in parsed_tool.args:
+                                    snippet = parsed_tool.args['content'][:50] + "..." if len(parsed_tool.args['content']) > 50 else parsed_tool.args['content']
+                                    details = f"Content: [yellow]{snippet}[/yellow]"
+
+                                msg = f"[bold yellow]Security Check[/bold yellow]\nAction: [cyan]{parsed_tool.tool_name}[/cyan]\nRisk: [yellow]{tool_risk.name}[/yellow]\n{details}\n¿Permitir ejecución?"
+
+                                if hasattr(self.display, "confirm_async"):
+                                    confirmed = await self.display.confirm_async(msg)
+                                else:
+                                    confirmed = self.display.confirm(msg)
+
+                                if not confirmed:
+                                    self.context.add_message("tool", "Action cancelled by user.", tool_call_id=parsed_tool.call_id)
+                                    return "Action cancelled by user. What would you like to do next?"
+
+                                self._turn_confirmed = True
+
+                        # Ejecutar tool con timeout
+                        details = ""
+                        if "command" in parsed_tool.args: details = parsed_tool.args["command"]
+                        elif "path" in parsed_tool.args: details = parsed_tool.args["path"]
+                        if len(details) > 60: details = details[:57] + "..."
+
+                        try:
+                            with self.display.show_spinner(f"Executing {parsed_tool.tool_name}", details=details):
+                                loop = asyncio.get_event_loop()
+                                result = await asyncio.wait_for(
+                                    loop.run_in_executor(None, self.tool_registry.execute, parsed_tool.tool_name, parsed_tool.args, self.config.agent.autonomy_level),
+                                    timeout=30.0  # tools síncronas tienen 30s máximo
+                                )
+                        except asyncio.TimeoutError:
+                            result_str = f"ERROR: Tool '{parsed_tool.tool_name}' timed out after 30 seconds. Use background=True for long-running processes."
+                            self.display.show_error(f"Tool '{parsed_tool.tool_name}' timed out.")
+                            self.context.add_message("tool", result_str, tool_call_id=parsed_tool.call_id)
+                            continue
+
+                        self.display.show_tool_result(parsed_tool.tool_name, result)
+
+                        if result.success and "diff" in result.metadata:
+                            self.display.show_diff(result.metadata["diff"])
+
+                        # Context bloat prevention: truncate tool output before saving to context
+                        output_for_context = result.output
+                        if output_for_context:
+                            out_lines = output_for_context.splitlines()
+                            if len(out_lines) > 50:
+                                output_for_context = "\n".join(out_lines[:50]) + f"\n\n... (Truncated {len(out_lines)-50} lines for context limit. If you need more details, use read_file tool or ask the user)."
+
+                        result_str = f"Success: {result.success}\nOutput:\n{output_for_context}"
+                        if result.error:
+                            result_str += f"\nError:\n{result.error}"
+
+                        self.context.add_message("tool", result_str, tool_call_id=parsed_tool.call_id)
+
+                    if has_loop_error:
                         continue
-
-                    self.display.show_tool_result(parsed.tool_name, result)
-
-                    if result.success and "diff" in result.metadata:
-                        self.display.show_diff(result.metadata["diff"])
-
-                    result_str = f"Success: {result.success}\nOutput:\n{result.output}"
-                    if result.error:
-                        result_str += f"\nError:\n{result.error}"
-
-                    self.context.add_message("tool", result_str, tool_call_id=parsed.call_id)
 
                 elif isinstance(parsed, FinalResponse):
                     self.display.show_thinking("", visible=False)
@@ -316,8 +338,9 @@ class AgentLoop:
         if not title:
             title = "Conversation"
             if len(self.context.messages) > 1:
-                title = self.context.messages[1]["content"][:50] + "..."
-                
+                content = self.context.messages[1].get("content")
+                if content:
+                    title = content[:50] + "..."
         if session_id:
             c.execute("UPDATE history SET date=?, title=COALESCE(?, title), tokens=?, content=? WHERE id=?",
                       (date_str, custom_title, self.context.token_count, content_json, session_id))

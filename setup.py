@@ -2,7 +2,7 @@ from setuptools import setup, find_packages
 
 setup(
     name="tukicode",
-    version="1.3.2",
+    version="1.3.3",
     packages=find_packages(),
     py_modules=["tuki", "config", "agent_icon"],
     install_requires=[

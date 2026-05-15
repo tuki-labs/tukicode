@@ -8,6 +8,12 @@ def get_base_dir():
         return pathlib.Path(sys._MEIPASS)
     return pathlib.Path(__file__).parent.parent
 
+try:
+    import tuki_native
+    HAS_NATIVE = True
+except ImportError:
+    HAS_NATIVE = False
+
 def build_system_prompt(config, tool_registry) -> str:
     prompt_path = get_base_dir() / "prompts" / "system_prompt.json"
     if not prompt_path.exists():
@@ -23,19 +29,52 @@ def build_system_prompt(config, tool_registry) -> str:
     schema_str = json.dumps(schema, indent=2, ensure_ascii=False)
     
     # Detección de entorno
+    import platform
     home = pathlib.Path.home()
-    desktop = home / "Desktop"
-    if not desktop.exists():
-        escritorio = home / "Escritorio"
-        if escritorio.exists():
-            desktop = escritorio
+    
+    os_name = platform.system()
+    if os_name == "Windows":
+        shell_name = "CMD (Command Prompt) / PowerShell"
+        os_rules = """WINDOWS RULES — CRITICAL:
+1. ALWAYS use Windows path format: C:\\Users\\name\\file
+2. To chain commands use `&&`.
+3. NEVER assume the OS is Linux or macOS.
+4. For environment variables use `%VARIABLE%` or `$env:VARIABLE` depending on shell."""
+    elif os_name == "Darwin":
+        shell_name = "zsh / bash"
+        os_rules = """MACOS RULES — CRITICAL:
+1. ALWAYS use Unix path format: /Users/name/file
+2. You can use standard Unix utilities (ls, cat, grep).
+3. NEVER assume the OS is Windows."""
+    else:
+        shell_name = "bash / sh"
+        os_rules = """LINUX RULES — CRITICAL:
+1. ALWAYS use Unix path format: /home/name/file
+2. You can use standard Unix utilities (ls, cat, grep).
+3. NEVER assume the OS is Windows."""
+
+    # Pre-fetch project tree
+    project_tree = "Project tree not available."
+    if HAS_NATIVE:
+        try:
+            tree_output = tuki_native.get_project_tree(str(pathlib.Path.cwd()), 3, [".git", "node_modules", "venv", "target", "build", "__pycache__"])
+            if tree_output:
+                lines = tree_output.splitlines()
+                if len(lines) > 150:
+                    tree_output = "\n".join(lines[:150]) + "\n... (Tree truncated for context limit)"
+                project_tree = tree_output
+        except Exception:
+            pass
 
     # Rellenar el template
     full_prompt = template.format(
+        os_name=os_name,
+        shell_name=shell_name,
+        os_rules=os_rules,
         cwd=pathlib.Path.cwd(),
         home=home,
-        desktop=desktop,
-        risk_level=config.agent.risk_level,
+        autonomy_level=config.agent.autonomy_level,
+        project_tree=project_tree,
         tools=schema_str
     )
     

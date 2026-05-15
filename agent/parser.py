@@ -1,7 +1,7 @@
 import json
 import re
 from dataclasses import dataclass
-from typing import Union
+from typing import Union, List
 
 @dataclass
 class ToolCall:
@@ -35,7 +35,7 @@ def extract_thinking(text: str) -> tuple[str, str]:
         return thinking, clean_text.strip()
     return "", text
 
-def parse_response(response: Union[dict, str], use_native: bool = True) -> Union[ToolCall, FinalResponse]:
+def parse_response(response: Union[dict, str], use_native: bool = True) -> Union[List[ToolCall], FinalResponse]:
     # Estrategia A - Tool calling nativo
     if use_native and isinstance(response, dict):
         tool_calls = []
@@ -50,23 +50,27 @@ def parse_response(response: Union[dict, str], use_native: bool = True) -> Union
                 tool_calls = msg["tool_calls"]
                 
         if tool_calls and len(tool_calls) > 0:
-            tc = tool_calls[0]
-            func = tc.get("function", {})
-            tool_name = func.get("name", "")
-            call_id = tc.get("id", "")
-            
-            args = func.get("arguments", {})
-            if isinstance(args, str):
-                try:
-                    args = json.loads(args)
-                except json.JSONDecodeError:
+            parsed_tools = []
+            for tc in tool_calls:
+                func = tc.get("function", {})
+                tool_name = func.get("name", "")
+                call_id = tc.get("id", "")
+                
+                args = func.get("arguments", {})
+                if isinstance(args, str):
+                    try:
+                        args = json.loads(args)
+                    except json.JSONDecodeError:
+                        args = {}
+                        
+                if not isinstance(args, dict):
                     args = {}
                     
-            if not isinstance(args, dict):
-                args = {}
-                
-            if tool_name and isinstance(tool_name, str):
-                return ToolCall(tool_name=tool_name, args=args, raw=json.dumps(tc), call_id=call_id)
+                if tool_name and isinstance(tool_name, str):
+                    parsed_tools.append(ToolCall(tool_name=tool_name, args=args, raw=json.dumps(tc), call_id=call_id))
+            
+            if parsed_tools:
+                return parsed_tools
 
     # Estrategia B - Fallback por texto
     # Si response es un dict pero falló la extraccion nativa, intentamos extraer el texto
@@ -86,6 +90,7 @@ def parse_response(response: Union[dict, str], use_native: bool = True) -> Union
     json_blocks = re.findall(r"```(?:json)?\s*([\s\S]*?)```", text)
     candidate_jsons = json_blocks if json_blocks else [text]
 
+    parsed_tools = []
     for candidate in candidate_jsons:
         candidate = candidate.strip()
         candidate = _clean_json(candidate)
@@ -105,8 +110,11 @@ def parse_response(response: Union[dict, str], use_native: bool = True) -> Union
                     args = parsed.get("args", {})
                     if not isinstance(args, dict):
                         args = {}
-                    return ToolCall(tool_name=parsed["tool"], args=args, raw=text, call_id="")
+                    parsed_tools.append(ToolCall(tool_name=parsed["tool"], args=args, raw=text, call_id=""))
             except (json.JSONDecodeError, ValueError):
                 continue
                 
+    if parsed_tools:
+        return parsed_tools
+        
     return FinalResponse(text=text)

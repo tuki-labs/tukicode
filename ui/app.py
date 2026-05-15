@@ -184,7 +184,6 @@ class TukiApp(App):
     def update_status(self) -> None:
         model = self.controller.config.model.name
         tokens = int(self.controller.context.token_count)
-        risk = self.controller.config.agent.risk_level
         autonomy = self.controller.config.agent.autonomy_level.upper()
         mode = self.controller.mode.upper()
         
@@ -196,7 +195,7 @@ class TukiApp(App):
             if total > 0:
                 step_info = f" | Plan: {step}/{total}"
 
-        status = f"Mode: {mode} | Model: {model} | Tokens: {tokens} | Risk: {risk} | Autonomy: {autonomy}{step_info}"
+        status = f"Mode: {mode} | Model: {model} | Tokens: {tokens} | Autonomy: {autonomy}{step_info}"
         self.query_one("#status-bar").update(status)
 
     async def on_input_submitted(self, event: Input.Submitted) -> None:
@@ -284,7 +283,6 @@ class TukiApp(App):
 [bold magenta]/setup[/bold magenta]                  → Open the interactive configuration wizard
 [bold magenta]/model[/bold magenta]                  → Open model selection menu
 [bold magenta]/model[/bold magenta] [dim]<name>[/dim]          → Switch directly to a model
-[bold magenta]/risk[/bold magenta] [dim][low|medium|high][/dim] → Set tool risk tolerance
 [bold magenta]/autonomy[/bold magenta] [dim][low|medium|high][/dim]→ Set confirmation level
 [bold magenta]/history[/bold magenta]                → Show past sessions
 [bold magenta]/clear[/bold magenta]                  → Clear chat log
@@ -312,19 +310,6 @@ class TukiApp(App):
                 new_model = args[0]
                 provider = self.controller.guess_provider(new_model)
                 self.handle_provider_switch(provider, new_model)
-        elif cmd == "/risk":
-            if not args:
-                current = self.controller.config.agent.risk_level
-                self.add_message("system", f"Current risk: [bold]{current}[/bold]  (options: low / medium / high)")
-            else:
-                new_risk = args[0].lower()
-                if new_risk in ["low", "medium", "high"]:
-                    self.controller.config.agent.risk_level = new_risk.upper()
-                    self.controller.config.save()
-                    self.add_message("system", f"Risk level → [bold]{new_risk.upper()}[/bold]")
-                    self.update_status()
-                else:
-                    self.add_message("error", "Invalid risk level. Use: low / medium / high")
         elif cmd == "/autonomy":
             if not args:
                 current = self.controller.config.agent.autonomy_level
@@ -346,7 +331,6 @@ class TukiApp(App):
     COMMAND_HINTS = {
         "/setup":    "→ Open configuration wizard",
         "/model":    "→ Switch AI model",
-        "/risk":     "→ Set risk level  [low|medium|high]",
         "/autonomy": "→ Set autonomy    [low|medium|high]",
         "/history":  "→ Show past sessions",
         "/clear":    "→ Clear chat log",
