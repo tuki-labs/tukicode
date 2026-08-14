@@ -1,6 +1,6 @@
 [package]
 name = "tuki_native"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 
 [lib]
@@ -14,6 +14,7 @@ ignore = "0.4"
 regex = "1"
 rayon = "1"
 anyhow = "1"
+similar = "2"
 
 [profile.release]
 codegen-units = 1

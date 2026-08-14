@@ -14,13 +14,24 @@ except ImportError:
     _native = None
     _NATIVE = False
 
-@tool("search_code", "Searches for a pattern in files", RiskLevel.MEDIUM)
+# ── Shared ignore list (from Rust if available) ─────────────────────────────
+if _NATIVE and hasattr(_native, 'default_ignore_list'):
+    _DEFAULT_IGNORE = set(_native.default_ignore_list())
+else:
+    _DEFAULT_IGNORE = {
+        "node_modules", ".git", "__pycache__", "venv", ".venv",
+        "dist", "build", "target", ".expo", ".next", "out",
+        "android", "ios", "Pods", ".pytest_cache",
+        "tukicode.egg-info", ".tox", ".mypy_cache",
+    }
+
+@tool("search_code", "Searches for a pattern in files (parallel + .gitignore-aware when Rust is available)", RiskLevel.MEDIUM)
 def search_code(query: str, path: str, file_extensions: list = None, case_sensitive: bool = False, context_lines: int = 2) -> ToolResult:
     p = pathlib.Path(path)
     if not p.exists():
         return ToolResult(success=False, output="", error=f"Path '{path}' does not exist.")
 
-    # Strategy 1: Rust native (always available, no external dependency)
+    # Strategy 1: Rust native (parallel, .gitignore-aware)
     if _NATIVE:
         try:
             results = _native.search_code(
@@ -70,6 +81,9 @@ def search_code(query: str, path: str, file_extensions: list = None, case_sensit
     for file_path in p.rglob("*"):
         if not file_path.is_file():
             continue
+        # Skip ignored directories
+        if any(part in _DEFAULT_IGNORE for part in file_path.parts):
+            continue
         if file_extensions:
             ext = file_path.suffix.lstrip(".")
             if ext not in file_extensions and file_path.suffix not in file_extensions:
@@ -94,7 +108,7 @@ def search_code(query: str, path: str, file_extensions: list = None, case_sensit
     return ToolResult(success=True, output="\n".join(results[:50]))
 
 # Using Rust for file operations in search_tools
-@tool("find_files", "Searches for files by glob pattern", RiskLevel.MEDIUM)
+@tool("find_files", "Searches for files by glob pattern (.gitignore-aware)", RiskLevel.MEDIUM)
 def find_files(pattern: str, root: str, max_depth: int = 5, ignore: list = None) -> ToolResult:
     p = pathlib.Path(root)
     if not p.exists():
@@ -109,6 +123,7 @@ def find_files(pattern: str, root: str, max_depth: int = 5, ignore: list = None)
             pass  # fall through to pure Python implementation
 
     ignore_set = set(ignore) if ignore else set()
+    ignore_set.update(_DEFAULT_IGNORE)
     results = []
     
     for file_path in p.rglob(pattern):
@@ -122,13 +137,13 @@ def find_files(pattern: str, root: str, max_depth: int = 5, ignore: list = None)
         if len(results) >= 100:
             break
             
-    return ToolResult(success=True, output="\n".join(results) if results else "No se encontraron archivos.")
+    return ToolResult(success=True, output="\n".join(results) if results else "No files found.")
 
-@tool("list_dir", "Lista el contenido de un directorio", RiskLevel.MEDIUM)
+@tool("list_dir", "Lists directory contents", RiskLevel.MEDIUM)
 def list_dir(path: str, recursive: bool = False, show_hidden: bool = False) -> ToolResult:
     p = pathlib.Path(path)
     if not p.exists() or not p.is_dir():
-        return ToolResult(success=False, output="", error="Directorio no existe.")
+        return ToolResult(success=False, output="", error="Directory does not exist.")
     
     if _NATIVE:
         try:
@@ -150,7 +165,7 @@ def list_dir(path: str, recursive: bool = False, show_hidden: bool = False) -> T
             size = stat.st_size if item.is_file() else "-"
             lines.append(f"{tipo}\t{size}\t{mtime}\t{item.relative_to(p) if recursive else item.name}")
             if len(lines) > 200:
-                lines.append("... (truncado)")
+                lines.append("... (truncated)")
                 break
         except Exception:
             continue

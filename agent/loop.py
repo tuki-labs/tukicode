@@ -6,6 +6,15 @@ from .parser import parse_response, ToolCall, FinalResponse, extract_thinking
 from tools.base import RiskLevel
 import json
 
+# ── tuki_native: Rust-accelerated token estimation ──────────────────────────
+try:
+    import tuki_native as _native
+    _NATIVE = True
+except ImportError:
+    _native = None
+    _NATIVE = False
+
+
 class AgentLoop:
     def __init__(self, config, llm_client, tool_registry, context, display):
         self.config = config
@@ -49,12 +58,14 @@ class AgentLoop:
         self.context.add_message("user", user_message)
         self._turn_confirmed = False
 
-        # ── Anti-loop: tracking de repeticiones ──
-        last_tool_calls = []
-        repeated_count = 0
+        # ── Anti-loop: tracking de repeticiones (improved) ──
+        from collections import Counter
+        tool_call_history = []   # lista completa de firmas
+        cycle_counter = Counter()
         MAX_ITERATIONS = 20
-        NUDGE_AT = 8        # iteraciones antes de recordarle que termine
-        MAX_REPEATED = 2    # veces que puede repetir la misma tool antes de cortar
+        NUDGE_AT = 8
+        MAX_REPEATED = 2         # max veces que una firma exacta puede repetir
+        MAX_CYCLE_LENGTH = 4     # detectar ciclos de hasta 4 pasos
 
         try:
             for iteration in range(MAX_ITERATIONS):
@@ -74,19 +85,21 @@ class AgentLoop:
                         "Do not call more tools unless strictly necessary."
                     )
 
-                # ── Timeout por llamada al LLM (60s) ──
+                # ── Timeout por llamada al LLM (90s — increased for rate-limited APIs) ──
                 try:
                     full_response = await asyncio.wait_for(
                         self._chat_and_stream(messages, native_tools),
-                        timeout=60.0
+                        timeout=90.0
                     )
                 except asyncio.TimeoutError:
                     self.display.show_error("LLM response timed out. Retrying...")
                     continue
 
-                # Debug
+                # Debug — write to app dir, not user CWD
                 try:
-                    debug_path = Path("last_response.json")
+                    from config import get_app_dir
+                    debug_path = get_app_dir() / "data" / "last_response.json"
+                    debug_path.parent.mkdir(parents=True, exist_ok=True)
                     if isinstance(full_response, str):
                         debug_path.write_text(full_response, encoding="utf-8")
                     else:
@@ -140,29 +153,55 @@ class AgentLoop:
                         if has_loop_error:
                             break # skip remaining tools if we detected a loop
 
-                        # ── Anti-loop: detectar tool calls repetidas ──
+                        # ── Anti-loop: improved cycle detection ──
                         if parsed_tool.tool_name not in ["get_process_output", "list_processes"]:
                             tool_signature = f"{parsed_tool.tool_name}:{json.dumps(parsed_tool.args, sort_keys=True)}"
-                            if tool_signature in last_tool_calls[-3:]:
-                                repeated_count += 1
-                                if repeated_count >= MAX_REPEATED:
-                                    # Inyectar mensaje de error y forzar respuesta final
-                                    self.context.add_message("tool",
-                                        f"ERROR: Tool '{parsed_tool.tool_name}' has been called with the same arguments "
-                                        f"{MAX_REPEATED} times in a row. Stop repeating and provide your FINAL RESPONSE.",
-                                        tool_call_id=parsed_tool.call_id
-                                    )
-                                    self.display.show_error(f"Loop detected: '{parsed_tool.tool_name}' repeated {MAX_REPEATED} times. Forcing final response.")
-                                    repeated_count = 0
-                                    last_tool_calls = []
-                                    has_loop_error = True
-                                    continue
-                            else:
-                                repeated_count = 0
 
-                            last_tool_calls.append(tool_signature)
-                            if len(last_tool_calls) > 10:
-                                last_tool_calls.pop(0)
+                            # Track exact repetitions
+                            cycle_counter[tool_signature] += 1
+                            tool_call_history.append(tool_signature)
+
+                            # Detection 1: Exact same call repeated too many times
+                            if cycle_counter[tool_signature] > MAX_REPEATED:
+                                self.context.add_message("tool",
+                                    f"ERROR: Tool '{parsed_tool.tool_name}' has been called with the same arguments "
+                                    f"{MAX_REPEATED + 1} times. Stop repeating and provide your FINAL RESPONSE.",
+                                    tool_call_id=parsed_tool.call_id
+                                )
+                                self.display.show_error(
+                                    f"Loop detected: '{parsed_tool.tool_name}' repeated. Forcing final response."
+                                )
+                                cycle_counter.clear()
+                                tool_call_history.clear()
+                                has_loop_error = True
+                                continue
+
+                            # Detection 2: Alternating cycle (A→B→A→B)
+                            if len(tool_call_history) >= MAX_CYCLE_LENGTH * 2:
+                                for cycle_len in range(2, MAX_CYCLE_LENGTH + 1):
+                                    recent = tool_call_history[-cycle_len * 2:]
+                                    first_half = recent[:cycle_len]
+                                    second_half = recent[cycle_len:]
+                                    if first_half == second_half:
+                                        self.context.add_message("tool",
+                                            f"ERROR: Cyclic pattern detected (repeating {cycle_len}-step cycle). "
+                                            f"Stop the loop and provide your FINAL RESPONSE now.",
+                                            tool_call_id=parsed_tool.call_id
+                                        )
+                                        self.display.show_error(
+                                            f"Cycle detected: {cycle_len}-step pattern. Forcing final response."
+                                        )
+                                        cycle_counter.clear()
+                                        tool_call_history.clear()
+                                        has_loop_error = True
+                                        break
+
+                                if has_loop_error:
+                                    continue
+
+                            # Keep history bounded
+                            if len(tool_call_history) > 20:
+                                tool_call_history = tool_call_history[-10:]
 
                         # Confirmación por riesgo
                         tool_item = self.tool_registry._tools.get(parsed_tool.tool_name)
@@ -227,9 +266,13 @@ class AgentLoop:
                         # Context bloat prevention: truncate tool output before saving to context
                         output_for_context = result.output
                         if output_for_context:
-                            out_lines = output_for_context.splitlines()
-                            if len(out_lines) > 50:
-                                output_for_context = "\n".join(out_lines[:50]) + f"\n\n... (Truncated {len(out_lines)-50} lines for context limit. If you need more details, use read_file tool or ask the user)."
+                            # Use Rust smart_truncate if available
+                            if _NATIVE and hasattr(_native, 'smart_truncate'):
+                                output_for_context = _native.smart_truncate(output_for_context, 50)
+                            else:
+                                out_lines = output_for_context.splitlines()
+                                if len(out_lines) > 50:
+                                    output_for_context = "\n".join(out_lines[:50]) + f"\n\n... (Truncated {len(out_lines)-50} lines for context limit. If you need more details, use read_file tool or ask the user)."
 
                         result_str = f"Success: {result.success}\nOutput:\n{output_for_context}"
                         if result.error:

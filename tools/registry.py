@@ -48,9 +48,23 @@ class ToolRegistry:
         for name, tool_item in self._tools.items():
             if isinstance(tool_item, BaseTool):
                 desc = tool_item.description
-                # Para simplificar, extraemos los argumentos dinámicamente si es posible
+                risk = tool_item.risk_level
+                # Extract args from execute method signature
+                sig = inspect.signature(tool_item.execute)
+                args_schema = {}
+                for param_name, param in sig.parameters.items():
+                    if param_name == "self" or param_name == "args":
+                        continue
+                    args_schema[param_name] = str(param.annotation.__name__) if hasattr(param.annotation, "__name__") else "any"
+                schema.append({
+                    "name": name,
+                    "description": desc,
+                    "args": args_schema,
+                    "risk_level": risk.name,
+                })
             else:
                 desc = getattr(tool_item, "__tool_description__")
+                risk = getattr(tool_item, "__tool_risk__")
                 sig = inspect.signature(tool_item)
                 args_schema = {}
                 for param_name, param in sig.parameters.items():
@@ -59,7 +73,8 @@ class ToolRegistry:
                 schema.append({
                     "name": name,
                     "description": desc,
-                    "args": args_schema
+                    "args": args_schema,
+                    "risk_level": risk.name,
                 })
         return schema
 

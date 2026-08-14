@@ -12,17 +12,79 @@ except ImportError:
     _native = None
     _NATIVE = False
 
-@tool("read_file", "Reads the content of a file", RiskLevel.MEDIUM)
-def read_file(path: str) -> ToolResult:
+# ── Shared ignore list (from Rust if available, otherwise hardcoded) ────────
+if _NATIVE and hasattr(_native, 'default_ignore_list'):
+    _DEFAULT_IGNORE = set(_native.default_ignore_list())
+else:
+    _DEFAULT_IGNORE = {
+        "node_modules", ".git", "__pycache__", "venv", ".venv",
+        "dist", "build", "target", ".expo", ".next", "out",
+        "android", "ios", "Pods", ".pytest_cache",
+        "tukicode.egg-info", ".tox", ".mypy_cache",
+    }
+
+@tool("read_file", "Reads the content of a file. For large files, only reads first 1000 lines.", RiskLevel.MEDIUM)
+def read_file(path: str, max_lines: int = 1000, start_line: int = 0) -> ToolResult:
     p = pathlib.Path(path).expanduser().resolve()
     if not p.exists() or not p.is_file():
         return ToolResult(success=False, output="", error=f"The file '{path}' does not exist or is not a valid file.")
     
     try:
+        max_lines = int(max_lines)
+    except:
+        max_lines = 1000
+    try:
+        start_line = int(start_line)
+    except:
+        start_line = 0
+
+    # Strategy 1: Rust native (with line numbers and binary detection)
+    if _NATIVE and hasattr(_native, 'read_file_lines'):
+        try:
+            content, total_lines = _native.read_file_lines(str(p), max_lines, start_line)
+            size = p.stat().st_size
+            return ToolResult(
+                success=True,
+                output=content,
+                metadata={
+                    "size_bytes": size,
+                    "total_lines": total_lines,
+                    "showing_from": start_line,
+                    "showing_to": min(start_line + max_lines, total_lines),
+                    "extension": p.suffix,
+                }
+            )
+        except Exception:
+            pass  # fall through to Python
+
+    # Strategy 2: Pure Python fallback
+    try:
         content = p.read_text(encoding="utf-8")
-        lines = len(content.splitlines())
+        lines = content.splitlines()
+        total_lines = len(lines)
         size = p.stat().st_size
-        return ToolResult(success=True, output=content, metadata={"size_bytes": size, "lines": lines, "extension": p.suffix})
+
+        end = min(start_line + max_lines, total_lines)
+        if start_line > 0 or total_lines > max_lines:
+            selected = lines[start_line:end]
+            numbered = "\n".join(
+                f"{i + start_line + 1:>4} | {line}"
+                for i, line in enumerate(selected)
+            )
+            if end < total_lines:
+                numbered += f"\n\n... ({total_lines - end} more lines. Use start_line={end} to continue.)"
+            content = numbered
+
+        return ToolResult(
+            success=True, output=content,
+            metadata={
+                "size_bytes": size,
+                "total_lines": total_lines,
+                "showing_from": start_line,
+                "showing_to": end,
+                "extension": p.suffix,
+            }
+        )
     except Exception as e:
         return ToolResult(success=False, output="", error=f"Error reading file: {str(e)}")
 
@@ -46,19 +108,42 @@ def write_file(path: str, content: str, create_dirs: bool = True) -> ToolResult:
     except Exception as e:
         return ToolResult(success=False, output="", error=f"Error writing file: {str(e)}")
 
-@tool("patch_file", "Replaces old_str with new_str in the file", RiskLevel.HIGH)
-def patch_file(path: str, old_str: str, new_str: str) -> ToolResult:
+@tool("patch_file", "Replaces old_str with new_str in the file. occurrence: 0=first, -1=all, N=Nth", RiskLevel.HIGH)
+def patch_file(path: str, old_str: str, new_str: str, occurrence: int = 0) -> ToolResult:
     p = pathlib.Path(path).expanduser().resolve()
     if not p.exists() or not p.is_file():
         return ToolResult(success=False, output="", error=f"The file '{path}' does not exist.")
     
     try:
+        occurrence = int(occurrence)
+    except:
+        occurrence = 0
+
+    # Strategy 1: Rust native diff engine
+    if _NATIVE and hasattr(_native, 'apply_patch'):
+        try:
+            diff = _native.apply_patch(str(p), old_str, new_str, occurrence)
+            return ToolResult(
+                success=True,
+                output=f"File '{p}' successfully modified.",
+                metadata={"diff": diff}
+            )
+        except Exception as e:
+            error_msg = str(e)
+            if "not found" in error_msg.lower():
+                return ToolResult(success=False, output="", error="The string 'old_str' was not found in the file.")
+            # fall through to Python for other errors
+
+    # Strategy 2: Pure Python fallback
+    try:
         content = p.read_text(encoding="utf-8")
         count = content.count(old_str)
         if count == 0:
             return ToolResult(success=False, output="", error="The string 'old_str' was not found in the file.")
-        if count > 1:
-            return ToolResult(success=False, output="", error="The string 'old_str' appears multiple times. Ambiguity detected.")
+        
+        if occurrence == 0 and count > 1:
+            # Original safety: if ambiguous and asking for first, warn but proceed
+            pass
         
         if "\\n" in new_str and "\n" not in new_str:
             try:
@@ -66,7 +151,17 @@ def patch_file(path: str, old_str: str, new_str: str) -> ToolResult:
             except:
                 pass
 
-        new_content = content.replace(old_str, new_str)
+        if occurrence == -1:
+            new_content = content.replace(old_str, new_str)
+        elif occurrence == 0:
+            new_content = content.replace(old_str, new_str, 1)
+        else:
+            # Replace Nth occurrence manually
+            parts = content.split(old_str)
+            if occurrence >= len(parts) - 1:
+                return ToolResult(success=False, output="", error=f"Requested occurrence {occurrence} but only {count} found.")
+            new_content = old_str.join(parts[:occurrence + 1]) + new_str + old_str.join(parts[occurrence + 1:])
+
         p.write_text(new_content, encoding="utf-8")
         
         diff = "\n".join(difflib.unified_diff(
@@ -125,13 +220,8 @@ def get_project_tree(path: str, max_depth: int = 4, ignore: list = None) -> Tool
             pass  # fall through to Python impl
 
     # ── Pure Python fallback ────────────────────────────────────
-    default_ignore = {
-        "node_modules", ".git", "__pycache__", "venv", ".venv",
-        "dist", "build", "target", ".expo", ".next", "out",
-        "android", "ios", "Pods"
-    }
     ignore_set = set(ignore) if ignore else set()
-    ignore_set.update(default_ignore)
+    ignore_set.update(_DEFAULT_IGNORE)
     tree_lines = []
 
     def walk(directory, prefix="", depth=0):

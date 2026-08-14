@@ -207,7 +207,7 @@ def show_config(setup: bool = typer.Option(False, "--setup", "-s", help="Open in
     tbl = Table(box=box.SIMPLE_HEAVY, show_header=True, header_style="bold cyan", padding=(0, 2))
     tbl.add_column("Setting", style="magenta")
     tbl.add_column("Value", style="white")
-    tbl.add_row("Risk Level",     f"[{'red' if config.agent.risk_level == 'HIGH' else 'yellow' if config.agent.risk_level == 'MEDIUM' else 'green'}]{config.agent.risk_level}[/]")
+    tbl.add_row("Risk Level",     f"[{'red' if config.agent.risk_level.upper() == 'HIGH' else 'yellow' if config.agent.risk_level.upper() == 'MEDIUM' else 'green'}]{config.agent.risk_level}[/]")
     tbl.add_row("Autonomy",       config.agent.autonomy_level)
     tbl.add_row("Language",       config.agent.language)
     tbl.add_row("Stream",         "Yes" if config.agent.stream else "No")

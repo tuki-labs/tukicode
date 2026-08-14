@@ -1,18 +1,16 @@
 use pyo3::prelude::*;
+use std::io::{BufRead, BufReader};
 use std::path::Path;
 use walkdir::WalkDir;
 
-const DEFAULT_IGNORE: &[&str] = &[
-    "node_modules", ".git", "__pycache__", "venv", ".venv",
-    "dist", "build", "target", ".expo", ".next", "out",
-    "android", "ios", "Pods", ".pytest_cache",
-];
+use crate::DEFAULT_IGNORE;
 
 fn should_ignore(name: &str, extra_ignore: &[String]) -> bool {
     DEFAULT_IGNORE.contains(&name) || extra_ignore.iter().any(|i| i == name)
 }
 
 /// Returns a directory tree string, ignoring common heavy directories.
+/// Uses the `ignore` crate to respect .gitignore when available.
 #[pyfunction]
 #[pyo3(signature = (path, max_depth=4, ignore=None))]
 pub fn get_project_tree(
@@ -105,6 +103,7 @@ fn build_tree(
 }
 
 /// Finds files matching a glob-style pattern under `root`.
+/// Uses the `ignore` crate for .gitignore-aware walking.
 #[pyfunction]
 #[pyo3(signature = (pattern, root, max_depth=5, ignore=None))]
 pub fn find_files(
@@ -124,16 +123,20 @@ pub fn find_files(
     let pattern_lower = pattern.to_lowercase().replace('*', "");
     let mut results: Vec<String> = Vec::new();
 
-    for entry in WalkDir::new(root_path)
-        .max_depth(max_depth)
-        .into_iter()
+    for entry in ignore::WalkBuilder::new(root_path)
+        .max_depth(Some(max_depth))
+        .hidden(true)
+        .git_ignore(true)
+        .git_global(true)
         .filter_entry(|e| {
             let name = e.file_name().to_string_lossy();
-            !should_ignore(&name, &extra_ignore)
+            !DEFAULT_IGNORE.contains(&name.as_ref())
+                && !extra_ignore.iter().any(|i| i == name.as_ref())
         })
+        .build()
         .filter_map(|e| e.ok())
     {
-        if entry.file_type().is_file() {
+        if entry.file_type().map_or(false, |ft| ft.is_file()) {
             let name = entry.file_name().to_string_lossy().to_lowercase();
             if pattern_lower.is_empty() || name.contains(&pattern_lower) {
                 results.push(entry.path().to_string_lossy().into_owned());
@@ -195,9 +198,72 @@ pub fn list_dir(
     })
 }
 
+/// Reads a file with partial line support.
+/// Returns (content, total_lines). Only reads from start_line to start_line + max_lines.
+/// Detects binary files and returns an error message instead.
+#[pyfunction]
+#[pyo3(signature = (path, max_lines=1000, start_line=0))]
+pub fn read_file_lines(
+    path: &str,
+    max_lines: usize,
+    start_line: usize,
+) -> PyResult<(String, usize)> {
+    let p = Path::new(path);
+    if !p.exists() || !p.is_file() {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            format!("File '{}' does not exist or is not a file.", path),
+        ));
+    }
+
+    // Quick binary check: read first 8KB
+    let raw_start = match std::fs::read(p) {
+        Ok(data) => data,
+        Err(e) => return Err(pyo3::exceptions::PyIOError::new_err(
+            format!("Error reading file: {}", e),
+        )),
+    };
+
+    let check_len = raw_start.len().min(8192);
+    let null_count = raw_start[..check_len].iter().filter(|&&b| b == 0).count();
+    if null_count > check_len / 20 {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "File appears to be binary. Cannot read as text.",
+        ));
+    }
+
+    // Read as text
+    let content = String::from_utf8_lossy(&raw_start);
+    let all_lines: Vec<&str> = content.lines().collect();
+    let total_lines = all_lines.len();
+
+    if start_line >= total_lines {
+        return Ok(("".to_string(), total_lines));
+    }
+
+    let end = (start_line + max_lines).min(total_lines);
+    let selected: Vec<&str> = all_lines[start_line..end].to_vec();
+
+    let mut result = String::new();
+    for (i, line) in selected.iter().enumerate() {
+        let line_num = start_line + i + 1;
+        result.push_str(&format!("{:>4} | {}\n", line_num, line));
+    }
+
+    if end < total_lines {
+        result.push_str(&format!(
+            "\n... ({} more lines not shown. Use start_line={} to continue.)\n",
+            total_lines - end,
+            end
+        ));
+    }
+
+    Ok((result, total_lines))
+}
+
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(get_project_tree, m)?)?;
     m.add_function(wrap_pyfunction!(find_files, m)?)?;
     m.add_function(wrap_pyfunction!(list_dir, m)?)?;
+    m.add_function(wrap_pyfunction!(read_file_lines, m)?)?;
     Ok(())
 }

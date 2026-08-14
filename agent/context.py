@@ -3,8 +3,48 @@ from typing import List, Dict
 from typing import List, Dict, Any
 from .prompts import build_compression_prompt
 
+# ── tuki_native: Rust-accelerated token estimation ──────────────────────────
+try:
+    import tuki_native as _native
+    _HAS_NATIVE = True
+except ImportError:
+    _native = None
+    _HAS_NATIVE = False
+
+
 def estimate_tokens(text: str) -> int:
-    return len(text) // 3
+    """Improved token estimation.
+
+    Uses Rust-accelerated estimation when available, otherwise uses a
+    heuristic that differentiates between code and natural language.
+    """
+    if not text:
+        return 0
+
+    if _HAS_NATIVE and hasattr(_native, 'estimate_tokens'):
+        return _native.estimate_tokens(text)
+
+    # ── Improved Python heuristic ──
+    # Code has more symbols → more tokens per character
+    # Spanish/accented text → ~3.2 chars per token
+    # English text → ~4 chars per token
+    total_chars = len(text)
+    if total_chars == 0:
+        return 0
+
+    non_alnum = sum(1 for c in text if not c.isalnum() and not c.isspace())
+    symbol_ratio = non_alnum / max(total_chars, 1)
+
+    if symbol_ratio > 0.25:
+        # Likely code: ~3 chars/token
+        return int(total_chars / 3.0)
+    elif symbol_ratio > 0.10:
+        # Mixed content: ~3.5 chars/token
+        return int(total_chars / 3.5)
+    else:
+        # Natural language: ~4 chars/token
+        return int(total_chars / 4.0)
+
 
 class ConversationContext:
     def __init__(self, context_window: int):
@@ -47,15 +87,13 @@ class ConversationContext:
         
         prompt = build_compression_prompt(to_compress)
         
+        spinner_ctx = None
         try:
             if display:
-                ctx_manager = display.show_spinner("Compressing memory to prevent context bloat...")
-                ctx_manager.__enter__()
+                spinner_ctx = display.show_spinner("Compressing memory to prevent context bloat...")
+                spinner_ctx.__enter__()
             
             response = await llm_client.chat([{"role": "user", "content": prompt}])
-            
-            if display:
-                ctx_manager.__exit__(None, None, None)
 
             # Extract summary from dict
             summary = ""
@@ -71,9 +109,12 @@ class ConversationContext:
             self.messages = [sys_msg, compressed_msg] + keep
             
             # Recalculate tokens
-            self.token_count = sum(estimate_tokens(m["content"]) for m in self.messages)
+            self.token_count = sum(estimate_tokens(m.get("content") or "") for m in self.messages)
         except Exception as e:
-            if display:
-                try: ctx_manager.__exit__(None, None, None) 
-                except: pass
             print(f"Error compressing context: {e}")
+        finally:
+            if spinner_ctx:
+                try:
+                    spinner_ctx.__exit__(None, None, None)
+                except:
+                    pass
