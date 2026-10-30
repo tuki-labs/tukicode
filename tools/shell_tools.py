@@ -12,7 +12,10 @@ from .registry import registry
 # ── tuki_native: Rust-accelerated utilities ─────────────────────────────────
 try:
     import tuki_native as _native
-    _NATIVE = True
+    # The source directory alone is importable as a namespace package.
+    # Only enable acceleration when the compiled extension is actually loaded.
+    _NATIVE = all(callable(getattr(_native, name, None)) for name in
+                  ("strip_control_sequences", "strip_ansi", "truncate_output"))
 except ImportError:
     _native = None
     _NATIVE = False
@@ -47,6 +50,10 @@ class BasePTYProcess(ABC):
     @abstractmethod
     def isalive(self) -> bool: ...
 
+    @property
+    @abstractmethod
+    def exit_code(self) -> int | None: ...
+
     @abstractmethod
     def terminate(self) -> None: ...
 
@@ -58,16 +65,16 @@ class _WindowsPTY(BasePTYProcess):
     """Windows implementation backed by pywinpty."""
 
     def __init__(self, cmd: str, cwd: str | None, env: dict, dims: tuple[int, int]):
-        from winpty import PtyProcess
+        from winpty import PTY, PtyProcess
         shell = r"C:\Windows\System32\cmd.exe"
         cols, rows = dims
-        self._proc = PtyProcess.spawn(shell, cwd=cwd, env=env, dimensions=(rows, cols))
-
-        # Navigate to cwd and clear the screen
-        if cwd:
-            self._proc.write(f'cd /d "{cwd}"\r\n')
-        self._proc.write("cls\r\n")
-        self._proc.write(f"{cmd}\r\n")
+        # cmd.exe requires its own quoting rules; list2cmdline would escape
+        # embedded quotes with backslashes, which cmd treats literally.
+        pty = PTY(cols, rows)
+        env_block = "\0".join(f"{key}={value}" for key, value in env.items()) + "\0"
+        pty.spawn(shell, cwd=cwd or os.getcwd(), env=env_block,
+                  cmdline=f' /d /s /c "{cmd}"')
+        self._proc = PtyProcess(pty)
 
     @property
     def pid(self) -> int:
@@ -84,6 +91,10 @@ class _WindowsPTY(BasePTYProcess):
 
     def isalive(self) -> bool:
         return self._proc.isalive()
+
+    @property
+    def exit_code(self) -> int | None:
+        return self._proc.exitstatus
 
     def terminate(self) -> None:
         self._proc.terminate()
@@ -124,6 +135,13 @@ class _UnixPTY(BasePTYProcess):
 
     def isalive(self) -> bool:
         return self._proc.isalive()
+
+    @property
+    def exit_code(self) -> int | None:
+        self._proc.isalive()  # Reap the child so exitstatus/signalstatus is populated.
+        if self._proc.signalstatus is not None:
+            return -self._proc.signalstatus
+        return self._proc.exitstatus
 
     def terminate(self) -> None:
         self._proc.terminate()
@@ -323,7 +341,9 @@ def run_shell(command: str, cwd: str = None, timeout_seconds: Union[int, str] = 
             "is_pty": True,
         }
 
-        threading.Thread(target=_read_pty, args=(proc, pid, "stdout"), daemon=True).start()
+        reader = threading.Thread(target=_read_pty, args=(proc, pid, "stdout"), daemon=True)
+        _bg_processes[pid]["reader"] = reader
+        reader.start()
 
         if background:
             return ToolResult(
@@ -343,14 +363,18 @@ def run_shell(command: str, cwd: str = None, timeout_seconds: Union[int, str] = 
                 time.sleep(0.1)
             
             # Command finished within timeout
+            reader.join(timeout=2)
+            exit_code = proc.exit_code
             exec_time = int((time.time() - start_time) * 1000)
             output = truncate_output(_bg_processes[pid]["stdout"]).strip()
             del _bg_processes[pid]
+            proc.close()
 
             return ToolResult(
-                success=True,
+                success=exit_code == 0,
                 output=output,
-                metadata={"command": command, "cwd": cwd, "execution_time_ms": exec_time},
+                error=None if exit_code == 0 else f"Command exited with code {exit_code}.",
+                metadata={"command": command, "cwd": cwd, "execution_time_ms": exec_time, "exit_code": exit_code},
             )
 
     except Exception as e:
@@ -371,17 +395,25 @@ def get_process_output(pid: Union[int, str]) -> ToolResult:
     output = truncate_output(info["stdout"], max_lines=500)
 
     status = "Running"
+    exit_code = None
     if info.get("is_pty"):
         if not info["process"].isalive():
             status = "Finished"
+            reader = info.get("reader")
+            if reader:
+                reader.join(timeout=2)
+            exit_code = info["process"].exit_code
+            output = truncate_output(info["stdout"], max_lines=500)
     else:
-        if info["process"].poll() is not None:
+        exit_code = info["process"].poll()
+        if exit_code is not None:
             status = "Finished"
 
     return ToolResult(
-        success=True,
+        success=status == "Running" or exit_code == 0,
         output=output,
-        metadata={"pid": pid, "status": status, "command": info["command"]},
+        error=f"Command exited with code {exit_code}." if status == "Finished" and exit_code != 0 else None,
+        metadata={"pid": pid, "status": status, "command": info["command"], "exit_code": exit_code},
     )
 
 

@@ -1,5 +1,4 @@
 use pyo3::prelude::*;
-use std::io::{BufRead, BufReader};
 use std::path::Path;
 use walkdir::WalkDir;
 
@@ -128,7 +127,7 @@ pub fn find_files(
         .hidden(true)
         .git_ignore(true)
         .git_global(true)
-        .filter_entry(|e| {
+        .filter_entry(move |e| {
             let name = e.file_name().to_string_lossy();
             !DEFAULT_IGNORE.contains(&name.as_ref())
                 && !extra_ignore.iter().any(|i| i == name.as_ref())

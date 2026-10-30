@@ -1,2 +1,0 @@
-[console_scripts]
-tuki = tuki:app

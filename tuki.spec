@@ -3,6 +3,7 @@ import sys
 from PyInstaller.utils.hooks import collect_submodules
 
 hidden_imports = collect_submodules("textual")
+hidden_imports.append("tuki_native")
 if sys.platform == "win32":
     hidden_imports.append("winpty")
 

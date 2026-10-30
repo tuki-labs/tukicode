@@ -12,7 +12,7 @@ def load_integrations(config: Config, tool_registry) -> List[str]:
     try:
         # Integración de ejemplo
         if hasattr(config.integrations, "openclaw") and config.integrations.openclaw.enabled:
-            mod = importlib.import_module("tuki.integrations.example_openclaw")
+            mod = importlib.import_module("integrations.example_openclaw")
             if hasattr(mod, "OpenClawIntegration"):
                 integration = mod.OpenClawIntegration()
                 # Dummy config

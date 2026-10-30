@@ -47,7 +47,6 @@ pub fn estimate_context_tokens(messages_json: &str) -> PyResult<usize> {
     total += message_count * 4;
 
     // Estimate based on total text size (excluding JSON structure)
-    let content_chars: usize = messages_json.len();
     total += estimate_tokens(messages_json);
 
     Ok(total)

@@ -12,9 +12,10 @@ def test_parse_tool_call_valid():
     ```
     """
     res = parse_response(text)
-    assert isinstance(res, ToolCall)
-    assert res.tool_name == "read_file"
-    assert res.args["path"] == "test.txt"
+    assert isinstance(res, list) and len(res) == 1
+    assert isinstance(res[0], ToolCall)
+    assert res[0].tool_name == "read_file"
+    assert res[0].args["path"] == "test.txt"
 
 def test_parse_final_response():
     text = "Hola, he terminado la tarea."
@@ -30,5 +31,6 @@ def test_parse_trailing_comma():
     }
     ```"""
     res = parse_response(text)
-    assert isinstance(res, ToolCall)
-    assert res.tool_name == "run"
+    assert isinstance(res, list) and len(res) == 1
+    assert isinstance(res[0], ToolCall)
+    assert res[0].tool_name == "run"

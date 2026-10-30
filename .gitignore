@@ -19,3 +19,8 @@ tuki_native/target/
 tuki_native/Cargo.lock
 *.pyd
 *.so
+
+# Generated package metadata and local execution state
+*.egg-info/
+planner_state.json
+native-wheels/

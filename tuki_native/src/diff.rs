@@ -1,11 +1,11 @@
 use pyo3::prelude::*;
-use similar::{ChangeTag, TextDiff};
+use similar::TextDiff;
 use std::path::Path;
 
 /// Applies a text replacement to a file.
 /// `occurrence`:
 ///   -1 → replace ALL occurrences
-///    0 → replace the FIRST occurrence
+///    0 → replace a unique occurrence (reject ambiguity)
 ///    N → replace the N-th occurrence (0-indexed)
 ///
 /// Returns a unified diff string on success.
@@ -28,7 +28,13 @@ pub fn apply_patch(
         pyo3::exceptions::PyIOError::new_err(format!("Error reading file: {}", e))
     })?;
 
+    if old_str.is_empty() || occurrence < -1 {
+        return Err(pyo3::exceptions::PyValueError::new_err("Invalid patch target or occurrence."));
+    }
     let count = content.matches(old_str).count();
+    if occurrence == 0 && count > 1 {
+        return Err(pyo3::exceptions::PyValueError::new_err("Ambiguity: old_str matches multiple locations."));
+    }
     if count == 0 {
         return Err(pyo3::exceptions::PyValueError::new_err(
             "The target string was not found in the file.",

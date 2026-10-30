@@ -9,7 +9,8 @@ def test_read_file(tmp_path):
     
     res = read_file(path=str(f))
     assert res.success == True
-    assert res.output == "Hola mundo"
+    assert res.output.strip().endswith("Hola mundo")
+    assert res.metadata["total_lines"] == 1
     
     res = read_file(path=str(tmp_path / "no_existe.txt"))
     assert res.success == False
@@ -53,3 +54,23 @@ def test_find_files(tmp_path):
     assert res.success == True
     assert "a.py" in res.output
     assert "b.py" in res.output
+
+
+def test_patch_ambiguity_never_reaches_native_writer(tmp_path, monkeypatch):
+    import tools.file_tools as file_tools
+    from unittest.mock import MagicMock
+    native = MagicMock()
+    monkeypatch.setattr(file_tools, "_NATIVE", True)
+    monkeypatch.setattr(file_tools, "_native", native)
+    f = tmp_path / "ambiguous.txt"
+    f.write_text("A B B", encoding="utf-8")
+    assert not patch_file(str(f), "B", "X").success
+    native.apply_patch.assert_not_called()
+    assert f.read_text(encoding="utf-8") == "A B B"
+
+
+def test_patch_explicit_all_matches(tmp_path):
+    f = tmp_path / "all.txt"
+    f.write_text("A B B", encoding="utf-8")
+    assert patch_file(str(f), "B", "X", occurrence=-1).success
+    assert f.read_text(encoding="utf-8") == "A X X"

@@ -120,6 +120,7 @@ class TukiApp(App):
         Binding("ctrl+l", "clear_chat", "Clear Chat"),
         Binding("ctrl+s", "stop_agent", "Stop Agent"),
         Binding("ctrl+b", "toggle_console", "Toggle Console"),
+        Binding("ctrl+up", "recall_message", "Previous Message", show=False, priority=True),
     ]
 
     def __init__(self, controller):
@@ -133,6 +134,7 @@ class TukiApp(App):
         self._confirm_future = None
         self._is_running = False
         self.session_title = None
+        self._last_user_message = None
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
@@ -219,6 +221,7 @@ class TukiApp(App):
             await self.handle_command(text)
             return
 
+        self._last_user_message = text
         self.add_message("user", text)
         self._is_running = True
         self._set_input_locked(True)
@@ -247,6 +250,8 @@ class TukiApp(App):
             self._confirm_future = None
 
     async def on_directory_tree_file_selected(self, event: DirectoryTree.FileSelected) -> None:
+        if self._is_running:
+            return
         path = str(event.path)
         self.add_message("system", f"Analyzing file: [cyan]{path}[/cyan]")
         user_text = f"Read and analyze the file: {path}"
@@ -560,6 +565,13 @@ class TukiApp(App):
     def action_focus_input(self) -> None:
         self.query_one("#input-bar").focus()
 
+    def action_recall_message(self) -> None:
+        input_bar = self.query_one("#input-bar", Input)
+        if self.focused is not input_bar or self._confirm_future or self._last_user_message is None:
+            return
+        input_bar.value = self._last_user_message
+        input_bar.cursor_position = len(input_bar.value)
+
     def action_clear_chat(self) -> None:
         self.query_one("#chat-log").clear()
         self.add_message("system", "Chat history cleared.")
@@ -567,7 +579,8 @@ class TukiApp(App):
     def action_stop_agent(self) -> None:
         if self._is_running:
             self.controller.stop_agent()
-            self._is_running = False 
+            if self._confirm_future and not self._confirm_future.done():
+                self._confirm_future.set_result(False)
             self.add_message("system", "[bold red]Emergency Stop Triggered.[/bold red]")
         else:
             self.add_message("system", "Agent is not running.")

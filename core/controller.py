@@ -14,6 +14,7 @@ class TukiController:
         self.context = context
         self.display = display
         self.session_id = session_id
+        self._processing = False
 
         # Initialize AI components
         from agent.loop import AgentLoop
@@ -35,14 +36,23 @@ class TukiController:
 
     async def process_input(self, text: str):
         """Processes user input based on the current mode."""
-        if self.mode == "chat":
-            await self._run_chat(text)
-        elif self.mode == "plan":
-            await self._run_plan(text)
-        elif self.mode == "build":
-            await self._run_build(text)
-        else:
-            self.display.show_error(f"Unknown mode: {self.mode}")
+        if self._processing:
+            self.display.show_error("The previous operation is still running or stopping.")
+            return
+        self._processing = True
+        self.agent_loop._stop_requested = False
+        self.display.should_stop = False
+        try:
+            if self.mode == "chat":
+                await self._run_chat(text)
+            elif self.mode == "plan":
+                await self._run_plan(text)
+            elif self.mode == "build":
+                await self._run_build(text)
+            else:
+                self.display.show_error(f"Unknown mode: {self.mode}")
+        finally:
+            self._processing = False
 
     async def _run_chat(self, text: str):
         try:
@@ -160,10 +170,17 @@ class TukiController:
         self.agent_loop.save_to_history(str(db_path), session_id=self.session_id)
 
     def save_setup(self, provider: str, model_name: str, api_key: str):
-        if provider == "openrouter" and api_key: self.config.openrouter.api_key = api_key
-        elif provider == "gemini" and api_key: self.config.gemini.api_key = api_key
-        elif provider == "anthropic" and api_key: self.config.anthropic.api_key = api_key
-        self.switch_model(provider, model_name)
+        from agent.onboarding import configured_copy
+        original_config, original_client = self.config, self.client
+        self.config = configured_copy(original_config, provider, model_name, api_key)
+        try:
+            self.switch_model(provider, model_name)
+        except Exception:
+            self.config = original_config
+            self.update_client(original_client)
+            raise
+        self.agent_loop.config = self.config
+        self.executor.config = self.config
 
     def get_history(self, limit: int = 10):
         import sqlite3

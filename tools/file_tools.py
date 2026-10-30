@@ -108,7 +108,7 @@ def write_file(path: str, content: str, create_dirs: bool = True) -> ToolResult:
     except Exception as e:
         return ToolResult(success=False, output="", error=f"Error writing file: {str(e)}")
 
-@tool("patch_file", "Replaces old_str with new_str in the file. occurrence: 0=first, -1=all, N=Nth", RiskLevel.HIGH)
+@tool("patch_file", "Replaces old_str with new_str. Default requires a unique match; -1=all, N>0=0-indexed occurrence. Narrow old_str to disambiguate.", RiskLevel.HIGH)
 def patch_file(path: str, old_str: str, new_str: str, occurrence: int = 0) -> ToolResult:
     p = pathlib.Path(path).expanduser().resolve()
     if not p.exists() or not p.is_file():
@@ -118,6 +118,16 @@ def patch_file(path: str, old_str: str, new_str: str, occurrence: int = 0) -> To
         occurrence = int(occurrence)
     except:
         occurrence = 0
+
+    # Apply the same ambiguity policy before either the Rust or Python path.
+    if not old_str or occurrence < -1:
+        return ToolResult(success=False, output="", error="Invalid patch target or occurrence.")
+    try:
+        count = p.read_text(encoding="utf-8").count(old_str)
+    except Exception as e:
+        return ToolResult(success=False, output="", error=f"Error reading file: {e}")
+    if occurrence == 0 and count > 1:
+        return ToolResult(success=False, output="", error="Ambiguity: old_str matches multiple locations. Narrow old_str or explicitly select an occurrence.")
 
     # Strategy 1: Rust native diff engine
     if _NATIVE and hasattr(_native, 'apply_patch'):
@@ -140,10 +150,6 @@ def patch_file(path: str, old_str: str, new_str: str, occurrence: int = 0) -> To
         count = content.count(old_str)
         if count == 0:
             return ToolResult(success=False, output="", error="The string 'old_str' was not found in the file.")
-        
-        if occurrence == 0 and count > 1:
-            # Original safety: if ambiguous and asking for first, warn but proceed
-            pass
         
         if "\\n" in new_str and "\n" not in new_str:
             try:

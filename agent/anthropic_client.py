@@ -38,6 +38,13 @@ class AnthropicClient:
                 anthropic_messages.append({"role": "user", "content": content})
             elif role == "assistant":
                 anthropic_messages.append({"role": "assistant", "content": content})
+            elif role == "tool":
+                # Text-based ReAct observations must reach the model on the next call.
+                observation = f"[TOOL RESULT {msg.get('tool_call_id', '')}]\n{content}"
+                if anthropic_messages and anthropic_messages[-1]["role"] == "user":
+                    anthropic_messages[-1]["content"] += "\n\n" + observation
+                else:
+                    anthropic_messages.append({"role": "user", "content": observation})
         
         system = [
             {
@@ -116,4 +123,5 @@ class AnthropicClient:
         return [self.model_name, "claude-3-5-sonnet-20240620", "claude-3-opus-20240229"]
 
     async def close(self):
-        await self._client.close()
+        if self._client:
+            await self._client.close()

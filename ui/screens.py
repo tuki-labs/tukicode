@@ -1,5 +1,5 @@
 from textual.screen import ModalScreen
-from textual.widgets import OptionList, Input, Label, Button, Select, RadioSet, RadioButton, Markdown
+from textual.widgets import OptionList, Input, Label, Button, Select, RadioSet, RadioButton, Markdown, Link
 from textual.containers import Vertical, Horizontal, ScrollableContainer
 from textual.binding import Binding
 from textual import on
@@ -104,6 +104,9 @@ class ApiKeyScreen(ModalScreen):
         with Vertical(id="api-container"):
             yield Label(f"🔑  API Key — {self.provider}", id="api-title")
             yield Label("Your key is stored locally in tukicode.toml", id="api-hint")
+            if self.provider.lower() == "openrouter":
+                from agent.model_catalog import KEYS_URL
+                yield Link("Create your OpenRouter API key", url=KEYS_URL)
             yield Input(
                 value=self.current_key,
                 placeholder=f"Paste your {self.provider} API key here...",
@@ -197,7 +200,6 @@ class SetupWizardScreen(ModalScreen):
     }
     DEFAULT_MODELS = {
         "ollama": ["deepseek-coder:1.3b", "llama3", "codestral"],
-        "openrouter": ["openai/gpt-4o", "anthropic/claude-3.5-sonnet", "tencent/hy3-preview:free"],
         "gemini": ["gemini-1.5-pro", "gemini-1.5-flash", "gemini-2.0-flash"],
         "anthropic": ["claude-3-5-sonnet-20240620", "claude-3-opus-20240229", "claude-3-haiku-20240307"],
     }
@@ -210,6 +212,11 @@ class SetupWizardScreen(ModalScreen):
         self.chosen_provider = config.model.provider
         self.chosen_key = ""
         self.chosen_model = config.model.name
+        self.coding_catalog = None
+        self.rejected_models = set()
+        self.validation_message = ""
+        self._validating = False
+        self._render_generation = 0
 
     # ──────────────────────────────────────────
     # Compose
@@ -240,11 +247,16 @@ class SetupWizardScreen(ModalScreen):
             self._go_back()
 
     def _advance(self):
+        if self._validating:
+            return
         # Collect value for current step
         if self.step == 1:
             try:
                 radio_set = self.query_one(RadioSet)
                 idx = radio_set.pressed_index
+                if self.PROVIDERS[idx] != self.chosen_provider:
+                    self.chosen_model = ""
+                    self.coding_catalog = None
                 self.chosen_provider = self.PROVIDERS[idx]
             except Exception:
                 pass
@@ -257,6 +269,9 @@ class SetupWizardScreen(ModalScreen):
                 self.chosen_key = self.query_one("#key-input").value.strip()
             except Exception:
                 pass
+            if not self.chosen_key or any(c.isspace() or c == "\\" for c in self.chosen_key):
+                self.notify("Enter an API key, not a command or path.", severity="warning")
+                return
             self.step = 3
         elif self.step == 3:
             try:
@@ -265,6 +280,22 @@ class SetupWizardScreen(ModalScreen):
                     self.chosen_model = model_input
             except Exception:
                 pass
+            if not self.chosen_model:
+                self.notify("Choose or enter a model first.", severity="warning")
+                return
+            if self.chosen_provider == "openrouter" and self.coding_catalog:
+                if self.chosen_model not in {m.id for m in self.coding_catalog.models}:
+                    self.notify("Choose a model with tool calling from the current catalog.", severity="warning")
+                    return
+            if self.chosen_provider == "openrouter":
+                if self.chosen_model in self.rejected_models:
+                    self.notify("This model failed its access check. Choose another model.", severity="warning")
+                    return
+                self._validating = True
+                self.query_one("#next-btn", Button).disabled = True
+                self.run_worker(self._validate_openrouter_selection(self._render_generation),
+                                group="setup-validation", exclusive=True)
+                return
             self.step = 4
         elif self.step == 4:
             # Confirmed — save and dismiss
@@ -287,15 +318,28 @@ class SetupWizardScreen(ModalScreen):
     # Rendering each step
     # ──────────────────────────────────────────
     def _render_step(self):
+        self._render_generation += 1
+        self._validating = False
+        self.run_worker(self._render_step_content(self._render_generation),
+                        group="setup-render", exclusive=True)
+
+    async def _render_step_content(self, generation):
         total = 4 if self.chosen_provider in self.NEEDS_KEY else 3
         self.query_one("#step-indicator").update(f"Step {self.step} of {total}")
         container = self.query_one("#step-content")
-        container.remove_children()
+        await container.remove_children()
+        if not self.is_mounted or generation != self._render_generation:
+            return
 
         back_btn = self.query_one("#back-btn")
         next_btn = self.query_one("#next-btn")
+        next_btn.disabled = False
         back_btn.label = "◀  Back"
         next_btn.label = "Finish ✔" if self.step == 4 else "Next  ▶"
+        if self.validation_message:
+            from textual.widgets import Static
+            from rich.text import Text
+            container.mount(Static(Text(self.validation_message, style="yellow")))
 
         if self.step == 1:
             self._render_step1(container)
@@ -322,6 +366,9 @@ class SetupWizardScreen(ModalScreen):
         provider_label = self.PROVIDER_LABELS.get(self.chosen_provider, self.chosen_provider)
         container.mount(Static(f"[bold]API Key for {provider_label}[/bold]\n"))
         container.mount(Static("[dim]Your key will be stored locally in tukicode.toml[/dim]"))
+        if self.chosen_provider == "openrouter":
+            from agent.model_catalog import KEYS_URL
+            container.mount(Link("Create your OpenRouter API key", url=KEYS_URL))
 
         # Pre-fill with existing key if present
         existing = ""
@@ -348,6 +395,65 @@ class SetupWizardScreen(ModalScreen):
         container.mount(
             Input(value=self.chosen_model, placeholder="model-name", id="model-input")
         )
+        if self.chosen_provider == "openrouter":
+            container.mount(Static("Next checks your key and runs a short synthetic tool-call test before saving. Normal model pricing/limits apply; no files are sent."))
+            container.mount(Static("Fetching current coding models with tool calling...", id="catalog-status"))
+            self.run_worker(self._load_coding_models(container), group="coding-catalog", exclusive=True)
+
+    async def _load_coding_models(self, container):
+        import asyncio
+        from rich.text import Text
+        from textual.widgets import Static
+        from textual.widgets.option_list import Option
+        from config import get_app_dir
+        from agent.model_catalog import fetch_coding_catalog, CodingCatalog, MODELS_PAGE
+        try:
+            catalog = await asyncio.to_thread(fetch_coding_catalog, get_app_dir() / "data" / "openrouter-models.json")
+        except RuntimeError:
+            if self.is_mounted and self.step == 3 and self.chosen_provider == "openrouter":
+                self.query_one("#catalog-status", Static).update("Catalog unavailable. Enter a model ID manually; tool support could not be verified.")
+                await container.mount(Link("Browse models with tool calling", url=MODELS_PAGE))
+            return
+        if not self.is_mounted or self.step != 3 or self.chosen_provider != "openrouter":
+            return
+        catalog = CodingCatalog(tuple(m for m in catalog.models if m.id not in self.rejected_models), catalog.fetched_at, catalog.cached)
+        self.coding_catalog = catalog
+        source = "CACHED (online lookup failed)" if catalog.cached else "LIVE"
+        self.query_one("#catalog-status", Static).update(Text(
+            f"{source} | {catalog.fetched_at}\nOpenRouter coding index (Artificial Analysis); unscored last. "
+            "All entries advertise tools; known app restrictions excluded. Account access may vary. Prices: USD / 1M input / output tokens. "
+            "Free options may have stricter limits. Select a model below."
+        ))
+        options = [Option(Text(f"{m.id} | {m.price_label} | context {m.context:,}"), id=m.id)
+                   for m in catalog.recommendations()]
+        await container.mount(OptionList(*options, id="coding-model-options"), before="#model-input")
+
+    async def _validate_openrouter_selection(self, generation):
+        import asyncio
+        from agent.onboarding import validate_openrouter_setup, SetupCheckError
+        model_name, key = self.chosen_model, self.chosen_key
+        try:
+            await asyncio.to_thread(validate_openrouter_setup, key, model_name, self.config.model.temperature)
+        except SetupCheckError as error:
+            if not self.is_mounted or generation != self._render_generation:
+                return
+            self.validation_message = str(error) + " Configuration was not saved."
+            if error.kind == "key":
+                self.step = 2
+            elif error.kind == "model":
+                self.rejected_models.add(model_name)
+                self.chosen_model = ""
+            self._render_step()
+            return
+        if not self.is_mounted or generation != self._render_generation:
+            return
+        self.validation_message = "OpenRouter access and native tool calling verified."
+        self.step = 4
+        self._render_step()
+
+    def on_option_list_option_selected(self, event: OptionList.OptionSelected):
+        if event.option_list.id == "coding-model-options":
+            self.query_one("#model-input", Input).value = event.option.id
 
     def _render_step4(self, container):
         from textual.widgets import Static

@@ -1,19 +1,4 @@
-from setuptools import setup, find_packages
+"""Compatibility entry point; metadata lives in pyproject.toml."""
+from setuptools import setup
 
-setup(
-    name="tukicode",
-    version="1.3.3",
-    packages=find_packages(),
-    py_modules=["tuki", "config", "agent_icon"],
-    install_requires=[
-        "ollama",
-        "rich",
-        "typer[all]",
-        "prompt-toolkit"
-    ],
-    entry_points={
-        "console_scripts": [
-            "tuki=tuki:app",
-        ],
-    },
-)
+setup()

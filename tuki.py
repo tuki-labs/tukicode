@@ -31,16 +31,49 @@ class ConfigComponent(str, Enum):
 
 app = typer.Typer(help="TukiCode - CLI Programming Agent")
 
+
+@app.callback(invoke_without_command=True)
+def start(ctx: typer.Context):
+    if ctx.invoked_subcommand is None:
+        chat(session_id=None, model=None, risk=None)
+
 @app.command("chat", help="Starts an interactive session with the TukiCode agent.")
 def chat(session_id: int = typer.Argument(None, help="ID of a previous session to resume"),
          model: str = typer.Option(None, "--model", "-m", help="Override model"),
          risk: str = typer.Option(None, "--risk", "-r", help="Override risk level")):
+    first_run = not (get_app_dir() / "tukicode.toml").exists()
     config = load_config()
+    setup_ran = False
+    if first_run or (not config.setup_completed and config.model.provider != "openrouter"):
+        from rich.console import Console
+        Console().print("Welcome to TukiCode! Configure your provider before starting your first session.")
+        show_config(setup=True)
+        setup_ran = True
     
     if model:
         config.model.name = model
     if risk:
         config.agent.risk_level = risk
+
+    if config.model.provider == "openrouter" and (not setup_ran or model):
+        from agent.onboarding import validate_openrouter_setup, SetupCheckError
+        from rich.console import Console
+        from rich.text import Text
+        console = Console()
+        console.print("Checking OpenRouter access with a short synthetic tool-call test (normal model pricing/limits apply; no files are sent)...")
+        try:
+            validate_openrouter_setup(config.openrouter.api_key, config.model.name, config.model.temperature)
+        except SetupCheckError as error:
+            console.print(Text(str(error), style="yellow"))
+            if error.kind == "temporary":
+                console.print("Retry tuki chat when the service or connection is available. Your configuration was kept.")
+                raise typer.Exit(1)
+            console.print("Let's repair your configuration before opening the chat.")
+            show_config(setup=True)
+        else:
+            if not config.setup_completed:
+                config.setup_completed = True
+                save_config(config)
 
     loaded_integrations = load_integrations(config, tool_registry)
     
@@ -107,7 +140,8 @@ def show_config(setup: bool = typer.Option(False, "--setup", "-s", help="Open in
             active = " [green](current)[/green]" if providers[key][0] == config.model.provider else ""
             console.print(f"  [cyan]{key}[/cyan]. {label}{active}")
 
-        choice = typer.prompt("\nEnter number", default="1")
+        default_provider = next((number for number, (provider, _) in providers.items() if provider == config.model.provider), "1")
+        choice = typer.prompt("\nEnter number", default=default_provider)
         if choice not in providers:
             console.print("[red]Invalid choice.[/red]")
             raise typer.Exit(1)
@@ -119,31 +153,64 @@ def show_config(setup: bool = typer.Option(False, "--setup", "-s", help="Open in
         NEEDS_KEY = {"openrouter", "gemini", "anthropic"}
         if provider_id in NEEDS_KEY:
             console.print("[bold]Step 2 — API Key:[/bold]")
+            if provider_id == "openrouter":
+                from agent.model_catalog import KEYS_URL
+                console.print(f"Create your key here: [link={KEYS_URL}]{KEYS_URL}[/link]")
+                console.print("Sign in, select Create API Key, copy it and paste it below (input is hidden).")
             current_key = ""
             if provider_id == "openrouter": current_key = config.openrouter.api_key
             elif provider_id == "gemini":   current_key = config.gemini.api_key
             elif provider_id == "anthropic": current_key = config.anthropic.api_key
             masked = f"(current: ****{current_key[-4:]})" if current_key and len(current_key) > 4 else ""
-            api_key = typer.prompt(f"  Enter {provider_id.upper()} API Key {masked}", hide_input=True, default=current_key)
+            api_key = typer.prompt(f"  Enter {provider_id.upper()} API Key {masked}", hide_input=True, default=current_key, show_default=False)
+            if not api_key or any(char.isspace() or char == "\\" for char in api_key):
+                console.print("[red]Enter the provider API key, not a terminal command or file path. Configuration was not saved.[/red]")
+                raise typer.Exit(1)
         else:
             api_key = ""
 
         # Step 3 — Model
         DEFAULT_MODELS = {
             "ollama":      ["deepseek-coder:1.3b", "llama3", "codestral"],
-            "openrouter":  ["openai/gpt-4o", "anthropic/claude-3.5-sonnet", "tencent/hy3-preview:free"],
             "gemini":      ["gemini-1.5-pro", "gemini-1.5-flash", "gemini-2.0-flash"],
             "anthropic":   ["claude-3-5-sonnet-20240620", "claude-3-opus-20240229"],
         }
         step_n = "Step 3" if provider_id in NEEDS_KEY else "Step 2"
         console.print(f"\n[bold]{step_n} — Model:[/bold]")
-        defaults = DEFAULT_MODELS.get(provider_id, [])
-        if defaults:
-            console.print("  Suggested models:")
-            for m in defaults:
-                console.print(f"    • {m}")
-        current_model = config.model.name
-        model_name = typer.prompt(f"\n  Model name", default=current_model)
+        if provider_id == "openrouter":
+            from agent.model_catalog import choose_coding_model
+            from agent.onboarding import validate_openrouter_setup, SetupCheckError
+            from rich.text import Text
+            current_model = config.model.name if config.model.provider == "openrouter" else None
+            rejected_models = set()
+            while True:
+                model_name = choose_coding_model(console, current_model, get_app_dir() / "data" / "openrouter-models.json", rejected_models)
+                console.print("Checking key, model access and a real tool call using a short synthetic test. Normal model pricing/limits apply; no files are sent.")
+                try:
+                    validate_openrouter_setup(api_key, model_name, config.model.temperature)
+                    console.print("[green]Access and native tool calling verified.[/green]")
+                    break
+                except SetupCheckError as error:
+                    console.print(Text(str(error), style="yellow"))
+                    if error.kind == "key":
+                        console.print("Create an inference key at https://openrouter.ai/settings/keys")
+                        api_key = typer.prompt("Enter another OpenRouter API key", hide_input=True, show_default=False)
+                    elif error.kind == "temporary":
+                        if not typer.confirm("Retry the connectivity check?", default=True):
+                            console.print("Configuration was not changed.")
+                            raise typer.Exit(1)
+                    else:
+                        rejected_models.add(model_name)
+                        current_model = None
+                        console.print("This model will not be saved. Choose another from the list.")
+        else:
+            defaults = DEFAULT_MODELS.get(provider_id, [])
+            if defaults:
+                console.print("  Suggested models:")
+                for m in defaults:
+                    console.print(f"    • {m}")
+            current_model = config.model.name
+            model_name = typer.prompt(f"\n  Model name", default=current_model)
 
         # Save
         console.print("\n[bold]Summary:[/bold]")
@@ -158,27 +225,10 @@ def show_config(setup: bool = typer.Option(False, "--setup", "-s", help="Open in
             console.print("[yellow]Configuration not saved.[/yellow]")
             raise typer.Exit()
 
-        config.model.provider = provider_id
-        config.model.name = model_name
-        if provider_id == "openrouter":
-            config.openrouter.enabled = True
-            if api_key: config.openrouter.api_key = api_key
-            if model_name not in config.openrouter.models:
-                config.openrouter.models.append(model_name)
-        elif provider_id == "gemini":
-            config.gemini.enabled = True
-            config.gemini.model = model_name
-            if api_key: config.gemini.api_key = api_key
-        elif provider_id == "anthropic":
-            config.anthropic.enabled = True
-            config.anthropic.model = model_name
-            if api_key: config.anthropic.api_key = api_key
-        else:
-            config.openrouter.enabled = False
-            config.gemini.enabled = False
-            config.anthropic.enabled = False
-
-        save_config(config)
+        from agent.onboarding import configured_copy
+        candidate = configured_copy(config, provider_id, model_name, api_key)
+        save_config(candidate)
+        config.__dict__.update(candidate.__dict__)
         console.print("\n[bold green]✅ Configuration saved successfully![/bold green]")
         console.print(f"   Run [cyan]tuki chat[/cyan] to start using {provider_id.upper()}.\n")
         return

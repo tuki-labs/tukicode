@@ -2,6 +2,7 @@ import httpx
 import json
 import time
 import asyncio
+import re
 from typing import Generator, List, Union
 
 class OpenRouterError(Exception):
@@ -17,14 +18,6 @@ class ModelOverloadedError(OpenRouterError):
     """Raised when the upstream model provider is overloaded (529)."""
     pass
 
-# Modelos que NO soportan tool calling en OpenRouter
-MODELS_WITHOUT_TOOL_CALLING = {
-    "openai/gpt-oss-120b:free",
-    "openai/gpt-oss-20b:free",
-    "mistralai/mistral-7b-instruct:free",
-    "huggingfaceh4/zephyr-7b-beta:free",
-}
-
 class OpenRouterClient:
     def __init__(self, model_name: str, temperature: float, max_tokens: int, stream: bool, api_key: str):
         self.model_name = model_name
@@ -35,7 +28,7 @@ class OpenRouterClient:
         self.base_url = "https://openrouter.ai/api/v1"
         self.headers = {
             "Authorization": f"Bearer {self.api_key}",
-            "HTTP-Referer": "https://github.com/tukicode",
+            "HTTP-Referer": "https://github.com/tuki-labs/tukicode",
             "X-Title": "TukiCode",
             "Content-Type": "application/json"
         }
@@ -53,7 +46,9 @@ class OpenRouterClient:
 
     @property
     def supports_tool_calling(self) -> bool:
-        return self.model_name not in MODELS_WITHOUT_TOOL_CALLING
+        # Setup filters against the live catalog. Provider routing enforces
+        # capability at request time rather than relying on a stale blacklist.
+        return True
 
     def _build_payload(self, messages: List[dict], tools: List[dict] = None, stream: bool = False) -> dict:
         """Construye el payload evitando tools en modelos que no las soportan."""
@@ -67,6 +62,7 @@ class OpenRouterClient:
             payload["stream"] = True
         if tools and self.supports_tool_calling:
             payload["tools"] = tools
+            payload["provider"] = {"require_parameters": True}
         return payload
 
     async def _throttle(self):
@@ -90,12 +86,22 @@ class OpenRouterClient:
     def _handle_error_response(self, response: httpx.Response):
         """Classifies HTTP errors and raises appropriate exceptions."""
         status = response.status_code
+        try:
+            error = response.json().get("error", {})
+            detail = error.get("message", "No error details provided.") if isinstance(error, dict) else str(error)
+        except (ValueError, AttributeError):
+            detail = "The service returned no JSON error details."
+        detail = str(detail)
+        if self.api_key:
+            detail = detail.replace(self.api_key, "[REDACTED]")
+        detail = re.sub(r"sk-or-[A-Za-z0-9_-]+", "[REDACTED]", detail)
+        detail = "".join(c for c in detail if c.isprintable() or c in "\n\t")[:1000]
 
         # Rate limited
         if status == 429:
             retry_after = float(response.headers.get("Retry-After", "5"))
             raise RateLimitError(
-                f"Rate limited by OpenRouter (429). Retry after {retry_after}s.",
+                f"Rate limited by OpenRouter (429): {detail}. Retry after {retry_after}s.",
                 retry_after=retry_after
             )
 
@@ -110,15 +116,18 @@ class OpenRouterClient:
             raise OpenRouterError(f"OpenRouter server error ({status}). Will retry.")
 
         # Auth errors (don't retry)
-        if status in (401, 402, 403):
-            try:
-                detail = response.json().get("error", {}).get("message", response.text)
-            except Exception:
-                detail = response.text
-            raise OpenRouterError(f"Auth/billing error ({status}): {detail}")
+        if status == 401:
+            raise OpenRouterError(f"Authentication failed (401): {detail}. Check your OpenRouter API key.")
+        if status == 402:
+            raise OpenRouterError(f"Credits/budget error (402): {detail}. Check your OpenRouter balance and key limits.")
+        if status == 403:
+            raise OpenRouterError(
+                f"Access denied (403): {detail}. Choose another model or review your OpenRouter access settings."
+            )
 
         # Other client errors
-        response.raise_for_status()
+        if not response.is_success:
+            raise OpenRouterError(f"OpenRouter request rejected ({status}): {detail}")
 
     async def chat(self, messages: List[dict], tools: List[dict] = None, response_format: dict = None) -> dict:
         MAX_RETRIES = 5
@@ -208,23 +217,10 @@ class OpenRouterClient:
                     ) as response:
                         # Check for error status before reading stream
                         if response.status_code != 200:
-                            # Read body for error details
-                            body = await response.aread()
-                            if response.status_code == 429:
-                                retry_after = float(
-                                    response.headers.get("Retry-After", "5")
-                                )
-                                raise RateLimitError(
-                                    f"Rate limited (429)",
-                                    retry_after=retry_after
-                                )
-                            if response.status_code == 529:
-                                raise ModelOverloadedError("Model overloaded (529)")
-                            if 500 <= response.status_code <= 503:
-                                raise OpenRouterError(
-                                    f"Server error ({response.status_code})"
-                                )
-                            response.raise_for_status()
+                            # Buffer the error before classifying it; raise_for_status
+                            # alone loses the provider's actual reason for a rejection.
+                            await response.aread()
+                            self._handle_error_response(response)
 
                         async for line in response.aiter_lines():
                             if not line:

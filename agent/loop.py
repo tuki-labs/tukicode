@@ -4,6 +4,7 @@ import asyncio
 from pathlib import Path
 from .parser import parse_response, ToolCall, FinalResponse, extract_thinking
 from tools.base import RiskLevel
+from .result import TurnResult
 import json
 
 # ── tuki_native: Rust-accelerated token estimation ──────────────────────────
@@ -36,19 +37,12 @@ class AgentLoop:
             return self._cached_native_tools
         native_tools = []
         for t in self.tool_registry.get_schema():
-            properties = {}
-            for arg_name, arg_type in t["args"].items():
-                properties[arg_name] = {"type": "string"}
             native_tools.append({
                 "type": "function",
                 "function": {
                     "name": t["name"],
                     "description": t["description"],
-                    "parameters": {
-                        "type": "object",
-                        "properties": properties,
-                        "required": list(t["args"].keys())
-                    }
+                    "parameters": t["parameters"]
                 }
             })
         self._cached_native_tools = native_tools
@@ -57,6 +51,8 @@ class AgentLoop:
     async def run_turn(self, user_message: str) -> str:
         self.context.add_message("user", user_message)
         self._turn_confirmed = False
+        tool_results = []
+        self.turn_tools_started = False
 
         # ── Anti-loop: tracking de repeticiones (improved) ──
         from collections import Counter
@@ -71,7 +67,7 @@ class AgentLoop:
             for iteration in range(MAX_ITERATIONS):
                 if self._stop_requested:
                     self._stop_requested = False
-                    return "Agent execution stopped by user."
+                    return TurnResult("Agent execution stopped by user.", "stopped", tool_results)
 
                 await self.context.compress_if_needed(self.llm_client, self.display)
                 messages = self.context.get_messages()
@@ -235,7 +231,7 @@ class AgentLoop:
 
                                 if not confirmed:
                                     self.context.add_message("tool", "Action cancelled by user.", tool_call_id=parsed_tool.call_id)
-                                    return "Action cancelled by user. What would you like to do next?"
+                                    return TurnResult("Action cancelled by user. What would you like to do next?", "cancelled", tool_results)
 
                                 self._turn_confirmed = True
 
@@ -248,15 +244,17 @@ class AgentLoop:
                         try:
                             with self.display.show_spinner(f"Executing {parsed_tool.tool_name}", details=details):
                                 loop = asyncio.get_event_loop()
+                                self.turn_tools_started = True
                                 result = await asyncio.wait_for(
-                                    loop.run_in_executor(None, self.tool_registry.execute, parsed_tool.tool_name, parsed_tool.args, self.config.agent.autonomy_level),
+                                    loop.run_in_executor(None, self.tool_registry.execute, parsed_tool.tool_name, parsed_tool.args, self.config.agent.risk_level),
                                     timeout=30.0  # tools síncronas tienen 30s máximo
                                 )
                         except asyncio.TimeoutError:
                             result_str = f"ERROR: Tool '{parsed_tool.tool_name}' timed out after 30 seconds. Use background=True for long-running processes."
                             self.display.show_error(f"Tool '{parsed_tool.tool_name}' timed out.")
                             self.context.add_message("tool", result_str, tool_call_id=parsed_tool.call_id)
-                            continue
+                            # A timed-out thread may still be running. Do not retry its side effects.
+                            return TurnResult(result_str, "timed_out", tool_results)
 
                         self.display.show_tool_result(parsed_tool.tool_name, result)
 
@@ -279,6 +277,9 @@ class AgentLoop:
                             result_str += f"\nError:\n{result.error}"
 
                         self.context.add_message("tool", result_str, tool_call_id=parsed_tool.call_id)
+                        tool_results.append({"tool": parsed_tool.tool_name, "args": parsed_tool.args,
+                                             "success": result.success, "output": output_for_context,
+                                             "error": result.error, "metadata": result.metadata})
 
                     if has_loop_error:
                         continue
@@ -286,7 +287,7 @@ class AgentLoop:
                 elif isinstance(parsed, FinalResponse):
                     self.display.show_thinking("", visible=False)
                     self.context.add_message("assistant", parsed.text)
-                    return parsed.text
+                    return TurnResult(parsed.text, "finished", tool_results)
 
             # Límite alcanzado — forzar respuesta con lo que tiene
             self.display.show_error("Max iterations reached. Forcing final response.")
@@ -294,16 +295,14 @@ class AgentLoop:
                 "MAX ITERATIONS REACHED. You MUST provide your final response NOW. "
                 "Summarize what you have done and what the result is."
             )
-            final = await self._chat_and_stream(self.context.get_messages(), None)
-            if isinstance(final, str):
-                return final
-            return "Task completed. Max iterations reached."
+            return TurnResult("Iteration limit reached. Task completion was not verified.",
+                              "limit_reached", tool_results)
 
         except Exception as e:
             from ui.display import StopRequestedException
             if isinstance(e, StopRequestedException):
                 self._stop_requested = False
-                return "Execution stopped by user."
+                return TurnResult("Execution stopped by user.", "stopped", tool_results)
             raise e
 
     def _merge_delta(self, target: dict, source: dict):

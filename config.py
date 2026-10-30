@@ -1,15 +1,27 @@
 import tomllib
+import json
+import os
+import tempfile
 import shutil
 from pathlib import Path
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from typing import List, Optional
 import sys
 
 # Config for CLI
 def get_app_dir() -> Path:
-    if getattr(sys, 'frozen', False):
-        return Path(sys.executable).parent.absolute()
-    return Path(__file__).parent.absolute()
+    frozen = getattr(sys, 'frozen', False)
+    legacy = Path(sys.executable if frozen else __file__).parent.absolute()
+    # Preserve existing installations and editable source checkouts.
+    if (legacy / "tukicode.toml").exists() or (not frozen and (legacy / ".git").is_dir()):
+        return legacy
+    # Installed packages/binaries may live in read-only directories.
+    if sys.platform == "win32":
+        root = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local")) / "TukiCode"
+    else:
+        root = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "tukicode"
+    root.mkdir(parents=True, exist_ok=True)
+    return root
 
 # Config for Ollama
 @dataclass
@@ -84,6 +96,7 @@ class Config:
     openrouter: OpenRouterConfig = field(default_factory=OpenRouterConfig)
     gemini: GeminiConfig = field(default_factory=GeminiConfig)
     anthropic: AnthropicConfig = field(default_factory=AnthropicConfig)
+    setup_completed: bool = False
 
     def save(self):
         save_config(self)
@@ -145,59 +158,44 @@ def load_config() -> Config:
         search=search_cfg,
         history=history_cfg,
         integrations=integ_cfg,
-        openrouter=_dict_to_dataclass(OpenRouterConfig, data.get("openrouter", {}))
+        openrouter=_dict_to_dataclass(OpenRouterConfig, data.get("openrouter", {})),
+        gemini=_dict_to_dataclass(GeminiConfig, data.get("gemini", {})),
+        anthropic=_dict_to_dataclass(AnthropicConfig, data.get("anthropic", {})),
+        setup_completed=data.get("setup_completed") is True,
     )
     return _config_instance
 
+def _dump_toml(data: dict) -> str:
+    """Serialize configuration values with TOML-compatible string escaping."""
+    lines = []
+    def write_table(values, path=()):
+        if path:
+            lines.append("[" + ".".join(path) + "]")
+        for key, value in values.items():
+            if not isinstance(value, dict):
+                encoded = json.dumps(value, ensure_ascii=False, allow_nan=False).replace("\x7f", "\\u007f")
+                lines.append(f"{key} = {encoded}")
+        lines.append("")
+        for key, value in values.items():
+            if isinstance(value, dict):
+                write_table(value, path + (key,))
+    write_table(data)
+    text = "\n".join(lines)
+    tomllib.loads(text)  # Never replace a working config with invalid TOML.
+    return text
+
+
 def save_config(config: Config):
-    """
-    Sobreescribe el toml con la configuración actual.
-    """
-    base_dir = get_app_dir()
-    config_path = base_dir / "tukicode.toml"
-    
-    toml_str = f'''[model]
-name = "{config.model.name}"
-provider = "{config.model.provider}"
-temperature = {config.model.temperature}
-max_tokens = {config.model.max_tokens}
-context_window = {config.model.context_window}
-
-[agent]
-risk_level = "{config.agent.risk_level}"
-autonomy_level = "{config.agent.autonomy_level}"
-language = "{config.agent.language}"
-think_aloud = {"true" if config.agent.think_aloud else "false"}
-stream = {"true" if config.agent.stream else "false"}
-
-[search]
-use_ripgrep = {"true" if config.search.use_ripgrep else "false"}
-max_depth = {config.search.max_depth}
-ignored_paths = {str(config.search.ignored_paths).replace("'", '"')}
-
-[history]
-save_conversations = {"true" if config.history.save_conversations else "false"}
-max_conversations = {config.history.max_conversations}
-
-[integrations.openclaw]
-enabled = {"true" if config.integrations.openclaw.enabled else "false"}
-
-[gemini]
-enabled = {str(config.gemini.enabled).lower()}
-model = "{config.gemini.model}"
-api_key = "{config.gemini.api_key}"
-models = {str(config.gemini.models).replace("'", '"')}
-
-[anthropic]
-enabled = {str(config.anthropic.enabled).lower()}
-model = "{config.anthropic.model}"
-api_key = "{config.anthropic.api_key}"
-models = {str(config.anthropic.models).replace("'", '"')}
-
-[openrouter]
-enabled = {str(config.openrouter.enabled).lower()}
-api_key = "{config.openrouter.api_key}"
-models = {str(config.openrouter.models).replace("'", '"')}
-'''
-    with open(config_path, "w", encoding="utf-8") as f:
-        f.write(toml_str)
+    """Atomically save all providers, escaping paths, quotes and control characters."""
+    config_path = get_app_dir() / "tukicode.toml"
+    text = _dump_toml(asdict(config))
+    temporary_path = None
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=config_path.parent,
+                                         prefix=".tukicode-", suffix=".tmp", delete=False) as output:
+            temporary_path = Path(output.name)
+            output.write(text)
+        os.replace(temporary_path, config_path)
+    finally:
+        if temporary_path is not None and temporary_path.exists():
+            temporary_path.unlink()

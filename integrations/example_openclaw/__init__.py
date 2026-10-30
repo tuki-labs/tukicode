@@ -1,6 +1,6 @@
 from typing import List
 from ..base_integration import BaseIntegration
-from ...tools.base import tool, ToolResult, RiskLevel
+from tools.base import tool, ToolResult, RiskLevel
 
 # Tools ficticias
 @tool("read_emails", "Lee los últimos N correos no leídos", RiskLevel.LOW)

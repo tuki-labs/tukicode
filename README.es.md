@@ -2,7 +2,7 @@
 
 <div align="center">
   <img src="./media/tukilogo.png" alt="TukiCode Logo" width="100"/>
-  <h3>Stable Release v1.3.3</h3>
+  <h3>Stable Release v1.3.4</h3>
 </div>
 
 **TukiCode** es un agente de programacion CLI de codigo abierto construido en Python. Funciona localmente con Ollama o en la nube con OpenRouter, Gemini y Anthropic. Cuenta con una arquitectura completamente asincrona diseñada para un alto rendimiento y capacidad de respuesta.
@@ -12,7 +12,7 @@
 ## Novedades
 
 - **Motor Nativo en Rust (`tuki_native`)** - Reemplaza las operaciones críticas de Python (sistema de archivos, búsqueda de código, E/S de terminal) por bindings de Rust sin costo adicional para una velocidad máxima.
-- **Ejecución Paralela de Herramientas** - El agente ahora puede invocar y procesar múltiples herramientas simultáneamente en un solo turno, reduciendo drásticamente la latencia en tareas complejas.
+- **Múltiples llamadas a herramientas** - El agente acepta varias llamadas por turno y las ejecuta secuencialmente. La búsqueda nativa usa Rayon para buscar archivos en paralelo.
 - **Prompt Caching Integrado** - Soporte nativo para caché de contexto con Anthropic, disminuyendo el costo de tokens y mejorando radicalmente el tiempo de respuesta (TTFT).
 - **Smart Background Shell** - Los comandos que tardan demasiado ya no fallan por timeout; se relegan transparentemente a un proceso en segundo plano (con monitoreo Anti-Loop inteligente) mientras la interfaz sigue mostrando su progreso en vivo.
 - **Multiplataforma Auténtica** - El motor de prompts detecta dinámicamente tu sistema operativo (Windows, macOS, Linux) para adaptar los comandos de shell y las rutas de forma automática.
@@ -117,7 +117,7 @@ El agente recibe tu mensaje y entra directamente al loop ReAct. Piensa, llama he
 
 1. Tu mensaje se envia a `Planner.generate_plan()`, que llama al LLM y devuelve un array JSON de pasos atomicos.
 2. El plan se muestra en pantalla y el agente **se pausa**, preguntando `"¿Deseas ejecutar este plan? (y/n)"`.
-3. Si confirmas, `Executor.execute_plan()` ejecuta cada paso secuencialmente via `AgentLoop.run_turn()`, con reintentos y cambio de modelo en caso de fallo.
+3. Si confirmas, `Executor.execute_plan()` ejecuta cada paso secuencialmente via `AgentLoop.run_turn()`, con evidencia de herramientas y una revisión estructurada independiente antes de completar cada paso. Un paso no verificado bloquea los siguientes; una interrupción lo deja pendiente. Solo se reintentan errores de transporte anteriores a cualquier herramienta.
 
 ### Build Mode
 
@@ -150,12 +150,13 @@ El agente recibe tu mensaje y entra directamente al loop ReAct. Piensa, llama he
 | `Ctrl+S` | Parada de emergencia: detiene la ejecucion actual del agente |
 | `Ctrl+B` | Alterna el panel de Consola en Vivo |
 | `Ctrl+L` | Limpia el registro del chat |
+| `Ctrl+↑` | Recupera el último mensaje enviado para editarlo, sin enviarlo |
 
 ---
 
 ## Requisitos
 
-- Python 3.10+
+- Python 3.11+
 - Uno de los siguientes:
   - **Ollama** ejecutandose localmente (`ollama serve`)
   - Clave API para **OpenRouter**, **Gemini**, o **Anthropic**
@@ -229,3 +230,21 @@ config.py            <- Gestor de configuracion TOML
 ```
 
 Para documentacion tecnica mas profunda, consulta [ARCHITECTURE.md](./ARCHITECTURE.md).
+
+## Verificación de pasos
+
+Plan/Build exige resultados de herramientas y una revisión adicional del modelo (una llamada por paso). Si falta evidencia o falla el revisor, el plan se bloquea. La revisión reduce falsos éxitos, pero no demuestra corrección: incluye las pruebas del proyecto en cada paso. El límite de riesgo y la frecuencia de confirmación son ajustes independientes.
+
+## Configurar OpenRouter
+
+`tuki config --setup` y `/setup` muestran el enlace directo a [crear una clave](https://openrouter.ai/settings/keys). Las recomendaciones se consultan en el catálogo público de OpenRouter, ordenado por `coding-high-to-low` (índice de programación de Artificial Analysis), y se filtran por soporte de herramientas y chat. Los modelos sin puntuación quedan al final según OpenRouter; la posición no garantiza resultados en una tarea concreta.
+
+La lista incluye precios base por millón de tokens de entrada/salida, contexto y hasta tres alternativas gratuitas. Puedes elegir por número en la consola o seleccionar una opción en la interfaz. La consulta no envía tu clave ni consume tokens. Si falla la conexión, se identifica el último catálogo guardado con su fecha; sin caché, se permite introducir el ID manualmente y se advierte que no se pudo comprobar la compatibilidad.
+
+### Primer inicio y comprobación de acceso
+
+`tuki` o `tuki chat` abre el asistente si todavía no se completó la configuración. Cancelarlo no marca el proceso como terminado. Las instalaciones nuevas guardan sus ajustes en una carpeta de usuario escribible; se conservan las rutas de instalaciones existentes y repositorios de desarrollo.
+
+Antes de guardar un modelo de OpenRouter se valida la clave y se solicita una llamada de herramienta sintética. La llamada devuelta se inspecciona y nunca se ejecuta. No se envían archivos del proyecto. Esta comprobación usa como máximo 256 tokens de salida, con las tarifas y cuotas normales del modelo seleccionado. También se comprueba el acceso al abrir una nueva sesión de OpenRouter.
+
+Un rechazo de acceso devuelve al selector; una clave rechazada vuelve a solicitarse. Un fallo de red permite reintentar o salir conservando la configuración anterior. No se cambia a un modelo de pago automáticamente. La disponibilidad del proveedor puede cambiar después de la comprobación; los errores posteriores muestran el motivo real del servicio.

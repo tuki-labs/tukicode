@@ -1,4 +1,0 @@
-ollama
-rich
-typer[all]
-prompt-toolkit

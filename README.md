@@ -2,7 +2,7 @@
 
 <div align="center">
   <img src="./media/tukilogo.png" alt="TukiCode Logo" width="100"/>
-  <h3>Stable Release v1.3.3</h3>
+  <h3>Stable Release v1.3.4</h3>
   <p>
     <a href="https://github.com/tuki-labs/tukicode/stargazers">
       <img src="https://img.shields.io/github/stars/tuki-labs/tukicode?style=for-the-badge&logo=github&logoColor=white&color=2997ff&labelColor=0d0d0d" alt="Stars"/>
@@ -14,7 +14,7 @@
       <img src="https://img.shields.io/badge/license-MIT-2997ff?style=for-the-badge&logo=opensourceinitiative&logoColor=white&labelColor=0d0d0d" alt="License"/>
     </a>
     <br/>
-    <img src="https://img.shields.io/badge/python-3.10+-3776AB?style=for-the-badge&logo=python&logoColor=white&labelColor=0d0d0d" alt="Python"/>
+    <img src="https://img.shields.io/badge/python-3.11+-3776AB?style=for-the-badge&logo=python&logoColor=white&labelColor=0d0d0d" alt="Python"/>
     <img src="https://img.shields.io/badge/rust-engine-CE422B?style=for-the-badge&logo=rust&logoColor=white&labelColor=0d0d0d" alt="Rust"/>
     <img src="https://img.shields.io/badge/platform-win%20%7C%20mac%20%7C%20linux-555?style=for-the-badge&logo=linux&logoColor=white&labelColor=0d0d0d" alt="Platform"/>
   </p>
@@ -27,7 +27,7 @@
 ## What's New
 
 - **Rust Native Engine (`tuki_native`)** - Replaces performance-critical Python operations (file system, code searching, terminal I/O) with zero-cost Rust bindings for maximum speed.
-- **Parallel Tool Execution** - The agent can now invoke and process multiple tools simultaneously in a single turn, drastically reducing latency in complex tasks.
+- **Multiple Tool Calls** - The agent accepts several tool calls per turn and executes them sequentially. Native code search uses Rayon to search files in parallel.
 - **Prompt Caching** - Native support for Anthropic context caching, slashing token costs and radically improving Time To First Token (TTFT).
 - **Smart Background Shell** - Long-running commands no longer fail due to timeouts; they are transparently relegated to a background process (with smart Anti-Loop monitoring) while the UI continues showing live progress.
 - **True Cross-Platform** - The prompt engine dynamically detects your OS (Windows, macOS, Linux) to adapt shell commands and paths automatically.
@@ -132,7 +132,7 @@ The agent receives your message and enters the ReAct loop directly. It thinks, c
 
 1. Your message is sent to `Planner.generate_plan()`, which calls the LLM and returns a JSON array of atomic steps.
 2. The plan is displayed and the agent **pauses**, asking `"Do you want to execute this plan? (y/n)"`.
-3. If confirmed, `Executor.execute_plan()` runs each step sequentially via `AgentLoop.run_turn()`, with retries and model fallback on failure.
+3. If confirmed, `Executor.execute_plan()` runs each step sequentially via `AgentLoop.run_turn()`, with tool evidence and a separate structured review before completing each step. Unverified steps block dependent work; interrupted steps remain pending. Transport retries only occur before any tool is invoked.
 
 ### Build Mode
 
@@ -165,12 +165,13 @@ The agent receives your message and enters the ReAct loop directly. It thinks, c
 | `Ctrl+S` | Emergency stop: halt the current agent execution |
 | `Ctrl+B` | Toggle the Live Console panel |
 | `Ctrl+L` | Clear chat log |
+| `Ctrl+↑` | Restore the last submitted message for editing, without sending it |
 
 ---
 
 ## Requirements
 
-- Python 3.10+
+- Python 3.11+
 - One of the following:
   - **Ollama** running locally (`ollama serve`)
   - API key for **OpenRouter**, **Gemini**, or **Anthropic**
@@ -244,3 +245,21 @@ config.py            <- TOML configuration manager
 ```
 
 For deeper technical documentation, see [ARCHITECTURE.md](./ARCHITECTURE.md).
+
+## Step verification
+
+Plan/Build verification requires observed tool results and an additional model review (one API call per step). It fails closed when evidence or the reviewer is unavailable. This review reduces false completion but is not a proof of correctness; run project-specific tests as part of each step. Risk limits and approval frequency are independent settings.
+
+## OpenRouter setup
+
+`tuki config --setup` and `/setup` link directly to [API key creation](https://openrouter.ai/settings/keys). They query the public catalog using `coding-high-to-low` (Artificial Analysis coding index) and filter for tool-capable chat models. Unscored models appear last according to OpenRouter; this ordering does not guarantee performance on a particular task.
+
+Recommendations show base input/output prices per million tokens, context length and up to three free alternatives. Choose by number in the CLI or select a model in the TUI. The catalog lookup sends no API key and consumes no model tokens. During outages, the last cached catalog is explicitly labelled with its timestamp. Without a usable cache, manual model entry remains available with a compatibility warning.
+
+### First launch and access checks
+
+`tuki` or `tuki chat` starts setup until configuration has been completed. Cancelling setup does not mark it complete. New installations store settings in a writable user directory; existing configuration paths and editable checkouts are preserved.
+
+Before saving an OpenRouter selection, setup validates the API key and requests a synthetic native tool call. The returned call is inspected and never executed; no project files are sent. The check allows up to 256 output tokens at the selected model's normal pricing and quota. Access is checked again when starting an OpenRouter chat session.
+
+Access rejection returns to model selection; rejected credentials request a replacement key. Network errors can be retried or abandoned without overwriting the previous configuration. There is no automatic switch to a paid model. Provider availability can still change after validation; later errors retain the service's actual explanation.

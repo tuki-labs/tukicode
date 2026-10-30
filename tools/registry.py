@@ -76,6 +76,25 @@ class ToolRegistry:
                     "args": args_schema,
                     "risk_level": risk.name,
                 })
+        for item in schema:
+            tool_item = self._tools[item["name"]]
+            function = tool_item.execute if isinstance(tool_item, BaseTool) else tool_item
+            properties = {}
+            required = []
+            types = {"str": "string", "int": "integer", "float": "number",
+                     "bool": "boolean", "list": "array", "dict": "object"}
+            for name, param in inspect.signature(function).parameters.items():
+                if name in ("self", "args"):
+                    continue
+                annotation = getattr(param.annotation, "__name__", str(param.annotation))
+                kind = types.get(annotation, "string")
+                properties[name] = {"type": kind}
+                if kind == "array":
+                    properties[name]["items"] = {"type": "string"}
+                if param.default is inspect.Parameter.empty:
+                    required.append(name)
+            item["parameters"] = {"type": "object", "properties": properties,
+                                  "required": required}
         return schema
 
 registry = ToolRegistry()

@@ -40,7 +40,20 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          pip install pyinstaller
+          pip install pyinstaller maturin
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build and install native extension
+        shell: bash
+        run: |
+          maturin build --release --manifest-path tuki_native/Cargo.toml --out native-wheels
+          python -m pip install --no-deps native-wheels/*.whl
+          python -c "import tuki_native; assert callable(tuki_native.search_code)"
+
+      - name: Run regression tests
+        run: python -m pytest -q
 
       - name: Build binary
         run: |
