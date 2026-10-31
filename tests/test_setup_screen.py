@@ -9,6 +9,14 @@ from agent.model_catalog import CodingCatalog, CodingModel, KEYS_URL
 from ui.screens import SetupWizardScreen
 
 
+async def settle(wizard, pilot):
+    # Step rendering and catalog loading are workers; an idle UI alone does not
+    # mean those workers have mounted all widgets on a busy CI runner.
+    await pilot.pause()
+    await wizard.workers.wait_for_complete()
+    await pilot.pause()
+
+
 @pytest.mark.asyncio
 async def test_tui_setup_has_key_link_and_live_selectable_models(monkeypatch):
     settings = Config()
@@ -21,23 +29,23 @@ async def test_tui_setup_has_key_link_and_live_selectable_models(monkeypatch):
     wizard = SetupWizardScreen(settings)
     async with app.run_test(size=(120, 45)) as pilot:
         await app.push_screen(wizard)
-        await pilot.pause()
+        await settle(wizard, pilot)
         wizard.query_one("#next-btn", Button).press()
-        await pilot.pause()
+        await settle(wizard, pilot)
         assert wizard.step == 2
         assert wizard.query_one(Link).url == KEYS_URL
         assert wizard.query_one("#key-input", Input).value == "fake-key-for-ui-test"
         wizard.query_one("#next-btn", Button).press()
-        await pilot.pause()
+        await settle(wizard, pilot)
         await wizard.workers.wait_for_complete()
         assert wizard.step == 3
         choices = wizard.query_one("#coding-model-options", OptionList)
         choices.highlighted = 0
         choices.action_select()
-        await pilot.pause()
+        await settle(wizard, pilot)
         assert wizard.query_one("#model-input", Input).value == "vendor/live-coder"
         wizard.query_one("#next-btn", Button).press()
-        await pilot.pause()
+        await settle(wizard, pilot)
         await wizard.workers.wait_for_complete()
         assert wizard.step == 4
         assert wizard.chosen_model == "vendor/live-coder"
@@ -61,19 +69,19 @@ async def test_tui_rejects_new_model_restriction_without_saving(monkeypatch):
     wizard = SetupWizardScreen(settings)
     async with app.run_test(size=(120, 45)) as pilot:
         await app.push_screen(wizard)
-        await pilot.pause()
+        await settle(wizard, pilot)
         for _ in range(2):
             wizard.query_one("#next-btn", Button).press()
-            await pilot.pause()
+            await settle(wizard, pilot)
         await wizard.workers.wait_for_complete()
         choices = wizard.query_one("#coding-model-options", OptionList)
         choices.highlighted = 0
         choices.action_select()
-        await pilot.pause()
+        await settle(wizard, pilot)
         wizard.query_one("#next-btn", Button).press()
-        await pilot.pause()
+        await settle(wizard, pilot)
         await wizard.workers.wait_for_complete()
-        await pilot.pause()
+        await settle(wizard, pilot)
         assert wizard.step == 3
         assert "vendor/blocked" in wizard.rejected_models
         assert "Configuration was not saved" in wizard.validation_message
@@ -83,9 +91,9 @@ async def test_tui_rejects_new_model_restriction_without_saving(monkeypatch):
         assert choices.option_count == 1
         choices.highlighted = 0
         choices.action_select()
-        await pilot.pause()
+        await settle(wizard, pilot)
         wizard.query_one("#next-btn", Button).press()
-        await pilot.pause()
+        await settle(wizard, pilot)
         await wizard.workers.wait_for_complete()
         assert wizard.step == 4
         assert wizard.chosen_model == "vendor/good"
